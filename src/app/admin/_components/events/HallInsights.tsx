@@ -53,6 +53,7 @@ function fmtDate(sec: number | null): string {
     day: "numeric",
     month: "short",
     year: "numeric",
+    timeZone: "Asia/Singapore",
   });
 }
 

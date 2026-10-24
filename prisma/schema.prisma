@@ -930,6 +930,12 @@ model Event {
   /// time, so no booking was made — surfaced to the head to book manually. The
   /// event is still approved (approval is never blocked on a booking clash).
   autoBookFailed    Boolean?
+  /// When a live event's time or place last changed. Residents who signed up
+  /// are shown the change.
+  scheduleChangedAt DateTime?
+  /// When a JCRC member other than the owner first opened the event. Until then
+  /// the JCRC All events list marks it New.
+  jcrcSeenAt        DateTime?
 
   // Public content — entered BEFORE submission (bannerUrl and publicDescription
   // are both required to leave draft), shown to residents once published.

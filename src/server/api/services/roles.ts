@@ -370,6 +370,12 @@ export const AUDIT_ACTIONS = [
   "event.cancel",
   "event.duplicate",
   "event.attendees.export",
+  // Direct publish (review off) and edits to a live event. A live edit is
+  // audited, unlike a draft save, because residents have already signed up to
+  // what it changes.
+  "event.publish",
+  "event.edit",
+  "event.delete",
   // Part C. A CHECK-IN IS NOT AUDITED — the EventAttendance row IS the
   // record and carries who, when and by whom; a parallel audit row would
   // duplicate it in a table that pages 25 at a time. AN UNDO IS, because it
