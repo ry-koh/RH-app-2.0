@@ -11,10 +11,7 @@ import {
   type AllEventsFilter,
 } from "~/lib/schemas/event";
 import { STATUS_META, formatDateRange } from "~/app/events/_lib/format";
-import {
-  PositionViewToggle,
-  usePositionScope,
-} from "../PositionView";
+import { PositionViewToggle, usePositionScope } from "../PositionView";
 
 const FILTER_LABELS: Record<AllEventsFilter, string> = {
   published: "Upcoming",

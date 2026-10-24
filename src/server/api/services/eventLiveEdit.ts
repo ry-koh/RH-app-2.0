@@ -120,7 +120,11 @@ export async function planLiveEdit(
       const move = await moveEventBooking(
         db,
         { ...event, facilityID: place.facilityID },
-        { facilityID: place.facilityID, startTime: startTime!, endTime: endTime! },
+        {
+          facilityID: place.facilityID,
+          startTime: startTime!,
+          endTime: endTime!,
+        },
       );
       data.bookingID = move.bookingID;
       data.autoBookFailed = false;

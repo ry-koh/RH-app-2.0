@@ -102,8 +102,7 @@ const EXACT: Record<string, string> = {
     "JCRC review is switched off, so you can publish this yourself. Reload the page.",
   NOT_PUBLISHABLE:
     "This event can't be published from its current state. Reload the page.",
-  REASON_REQUIRED:
-    "Tell the people who signed up why it's cancelled.",
+  REASON_REQUIRED: "Tell the people who signed up why it's cancelled.",
   NOT_DELETABLE:
     "Only a draft that was never published can be deleted. Cancel it instead.",
   // submitForReview refuses anything whose editScope is not "all"; retrying

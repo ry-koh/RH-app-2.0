@@ -143,10 +143,11 @@ export default function EventDetailsFields({
           Detailed description
         </label>
         <p className="text-xs text-gray-500">
-          What the event is, who it&rsquo;s for, and what happens. This is
-          the internal record JCRC sees — residents read the public description
+          What the event is, who it&rsquo;s for, and what happens. This is the
+          internal record JCRC sees — residents read the public description
           instead.
-          {lockIdentity && " The name and this description are fixed now it’s live."}
+          {lockIdentity &&
+            " The name and this description are fixed now it’s live."}
         </p>
         <textarea
           value={value.description}
@@ -221,8 +222,8 @@ export default function EventDetailsFields({
           )}
           {facilityChosen && (
             <p className="text-xs text-emerald-700">
-              This facility is booked automatically for the times above when
-              the event goes live — so set an end time.
+              This facility is booked automatically for the times above when the
+              event goes live — so set an end time.
             </p>
           )}
         </div>

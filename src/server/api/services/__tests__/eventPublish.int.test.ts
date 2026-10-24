@@ -59,8 +59,7 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           "x-forwarded-for": `203.0.113.${(ipCounter += 1) % 250}`,
         }),
       });
-    const as = (userID: string, roles: string[]) =>
-      caller(userID, roles).event;
+    const as = (userID: string, roles: string[]) => caller(userID, roles).event;
 
     const HEAD = ["resident"];
     const JCRC = ["resident", "jcrc"];
@@ -85,7 +84,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       });
       await db.eventQuestion.deleteMany({ where: { eventID: { in: ids } } });
       await db.event.deleteMany({
-        where: { OR: [{ eventID: { in: ids } }, { createdBy: { in: ALL_IDS } }] },
+        where: {
+          OR: [{ eventID: { in: ids } }, { createdBy: { in: ALL_IDS } }],
+        },
       });
       await db.bookings.deleteMany({
         where: { facilityID: { in: [FACILITY, OTHER_FACILITY] } },
@@ -224,9 +225,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
 
     it("refuses publish while review is on, and submit while it is off", async () => {
       const id = await makeEvent();
-      expect(await errorOf(as(USERS.head, HEAD).submitForReview({ eventID: id }))).toBe(
-        "PRECONDITION_FAILED:REVIEW_OFF",
-      );
+      expect(
+        await errorOf(as(USERS.head, HEAD).submitForReview({ eventID: id })),
+      ).toBe("PRECONDITION_FAILED:REVIEW_OFF");
       await setFlag("events.review.required", "on");
       expect(await errorOf(as(USERS.head, HEAD).publish({ eventID: id }))).toBe(
         "PRECONDITION_FAILED:REVIEW_REQUIRED",
@@ -242,7 +243,10 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
     });
 
     it("books the facility on publish and refuses a clash, writing nothing", async () => {
-      const first = await makeEvent({ facilityID: FACILITY, location: "TEST Room" });
+      const first = await makeEvent({
+        facilityID: FACILITY,
+        location: "TEST Room",
+      });
       await as(USERS.head, HEAD).publish({ eventID: first });
       const booked = await eventRow(first);
       expect(booked.bookingID).not.toBeNull();
@@ -254,7 +258,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         startTime: T + HOUR,
         endTime: T + 3 * HOUR,
       });
-      const err = await errorOf(as(USERS.head, HEAD).publish({ eventID: second }));
+      const err = await errorOf(
+        as(USERS.head, HEAD).publish({ eventID: second }),
+      );
       expect(err).toMatch(/^CONFLICT:FACILITY_CLASH:/);
       expect(JSON.parse(err.slice("CONFLICT:FACILITY_CLASH:".length))).toEqual({
         eventName: "TEST event",
@@ -264,11 +270,16 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       const row = await eventRow(second);
       expect(row.status).toBe("draft");
       expect(row.bookingID).toBeNull();
-      expect(await db.bookings.count({ where: { facilityID: FACILITY } })).toBe(1);
+      expect(await db.bookings.count({ where: { facilityID: FACILITY } })).toBe(
+        1,
+      );
     });
 
     it("keeps an event's room out of its author's personal bookings", async () => {
-      const id = await makeEvent({ facilityID: FACILITY, location: "TEST Room" });
+      const id = await makeEvent({
+        facilityID: FACILITY,
+        location: "TEST Room",
+      });
       await as(USERS.head, HEAD).publish({ eventID: id });
       const mine = await caller(USERS.head, HEAD).bookings.getUserBookings();
       expect(mine.some((b) => b.facilityID === FACILITY)).toBe(false);
@@ -279,7 +290,10 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
     /* ---------------------------------------------------------------- */
 
     it("moves the booking with a live time change and flags the change", async () => {
-      const id = await makeEvent({ facilityID: FACILITY, location: "TEST Room" });
+      const id = await makeEvent({
+        facilityID: FACILITY,
+        location: "TEST Room",
+      });
       await as(USERS.head, HEAD).publish({ eventID: id });
       await as(USERS.head, HEAD).update({
         eventID: id,
@@ -299,7 +313,10 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
     });
 
     it("frees the room when a live event moves to a free-text place", async () => {
-      const id = await makeEvent({ facilityID: FACILITY, location: "TEST Room" });
+      const id = await makeEvent({
+        facilityID: FACILITY,
+        location: "TEST Room",
+      });
       await as(USERS.head, HEAD).publish({ eventID: id });
       await as(USERS.head, HEAD).update({
         eventID: id,
@@ -309,18 +326,26 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       const row = await eventRow(id);
       expect(row.bookingID).toBeNull();
       expect(row.location).toBe("The lawn");
-      expect(await db.bookings.count({ where: { facilityID: FACILITY } })).toBe(0);
+      expect(await db.bookings.count({ where: { facilityID: FACILITY } })).toBe(
+        0,
+      );
     });
 
     it("refuses a changed title on a live event but accepts the same one", async () => {
       const id = await makeEvent();
       await as(USERS.head, HEAD).publish({ eventID: id });
       expect(
-        await errorOf(as(USERS.head, HEAD).update({ eventID: id, title: "Renamed" })),
+        await errorOf(
+          as(USERS.head, HEAD).update({ eventID: id, title: "Renamed" }),
+        ),
       ).toBe("BAD_REQUEST:FIELD_LOCKED:title");
       expect(
         await errorOf(
-          as(USERS.head, HEAD).update({ eventID: id, title: "TEST event", capacity: 50 }),
+          as(USERS.head, HEAD).update({
+            eventID: id,
+            title: "TEST event",
+            capacity: 50,
+          }),
         ),
       ).toBe("ok");
       expect((await eventRow(id)).capacity).toBe(50);
@@ -332,15 +357,22 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       await signUp(id, USERS.resident);
       await signUp(id, USERS.second);
       expect(
-        await errorOf(as(USERS.head, HEAD).update({ eventID: id, capacity: 1 })),
+        await errorOf(
+          as(USERS.head, HEAD).update({ eventID: id, capacity: 1 }),
+        ),
       ).toBe("BAD_REQUEST:CAPACITY_BELOW_SIGNUPS:2");
       expect(
-        await errorOf(as(USERS.head, HEAD).update({ eventID: id, capacity: 2 })),
+        await errorOf(
+          as(USERS.head, HEAD).update({ eventID: id, capacity: 2 }),
+        ),
       ).toBe("ok");
     });
 
     it("keeps the old room when a move is refused for capacity", async () => {
-      const id = await makeEvent({ facilityID: FACILITY, location: "TEST Room" });
+      const id = await makeEvent({
+        facilityID: FACILITY,
+        location: "TEST Room",
+      });
       await as(USERS.head, HEAD).publish({ eventID: id });
       await signUp(id, USERS.resident);
       await signUp(id, USERS.second);
@@ -356,7 +388,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         ),
       ).toBe("BAD_REQUEST:CAPACITY_BELOW_SIGNUPS:2");
       expect((await eventRow(id)).bookingID).toBe(before.bookingID);
-      expect(await db.bookings.count({ where: { facilityID: FACILITY } })).toBe(1);
+      expect(await db.bookings.count({ where: { facilityID: FACILITY } })).toBe(
+        1,
+      );
       expect(
         await db.bookings.count({ where: { facilityID: OTHER_FACILITY } }),
       ).toBe(0);
@@ -369,14 +403,19 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       });
       const after = await eventRow(id);
       expect(after.facilityID).toBe(OTHER_FACILITY);
-      expect(await db.bookings.count({ where: { facilityID: FACILITY } })).toBe(0);
+      expect(await db.bookings.count({ where: { facilityID: FACILITY } })).toBe(
+        0,
+      );
       expect(
         await db.bookings.count({ where: { facilityID: OTHER_FACILITY } }),
       ).toBe(1);
     });
 
     it("leaves the booking's time alone when a same-room edit is refused", async () => {
-      const id = await makeEvent({ facilityID: FACILITY, location: "TEST Room" });
+      const id = await makeEvent({
+        facilityID: FACILITY,
+        location: "TEST Room",
+      });
       await as(USERS.head, HEAD).publish({ eventID: id });
       await signUp(id, USERS.resident);
       await signUp(id, USERS.second);
@@ -399,13 +438,16 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
     /* ---------------------------------------------------------------- */
 
     it("needs a reason to cancel a live event and shows it to signups", async () => {
-      const id = await makeEvent({ facilityID: FACILITY, location: "TEST Room" });
+      const id = await makeEvent({
+        facilityID: FACILITY,
+        location: "TEST Room",
+      });
       await as(USERS.head, HEAD).publish({ eventID: id });
       await signUp(id, USERS.resident);
 
-      expect(await errorOf(as(USERS.head, HEAD).cancelEvent({ eventID: id }))).toBe(
-        "BAD_REQUEST:REASON_REQUIRED",
-      );
+      expect(
+        await errorOf(as(USERS.head, HEAD).cancelEvent({ eventID: id })),
+      ).toBe("BAD_REQUEST:REASON_REQUIRED");
       await as(USERS.head, HEAD).cancelEvent({
         eventID: id,
         reason: "The venue flooded",
@@ -414,7 +456,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       const row = await eventRow(id);
       expect(row.status).toBe("canceled");
       expect(row.decisionReason).toBe("The venue flooded");
-      expect(await db.bookings.count({ where: { facilityID: FACILITY } })).toBe(0);
+      expect(await db.bookings.count({ where: { facilityID: FACILITY } })).toBe(
+        0,
+      );
 
       const mine = await as(USERS.resident, ["resident"]).listMySignups();
       const card = mine.events.find((e) => e.eventID === id);
@@ -428,9 +472,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
 
       const live = await makeEvent();
       await as(USERS.head, HEAD).publish({ eventID: live });
-      expect(await errorOf(as(USERS.head, HEAD).deleteDraft({ eventID: live }))).toBe(
-        "PRECONDITION_FAILED:NOT_DELETABLE",
-      );
+      expect(
+        await errorOf(as(USERS.head, HEAD).deleteDraft({ eventID: live })),
+      ).toBe("PRECONDITION_FAILED:NOT_DELETABLE");
 
       const withdrawn = await makeEvent({ publishedAt: new Date() });
       expect(
@@ -441,7 +485,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
     it("refuses deletion by someone who does not head the CCA", async () => {
       const draft = await makeEvent();
       expect(
-        await errorOf(as(USERS.resident, ["resident"]).deleteDraft({ eventID: draft })),
+        await errorOf(
+          as(USERS.resident, ["resident"]).deleteDraft({ eventID: draft }),
+        ),
       ).toBe("FORBIDDEN:NOT_A_HEAD_OF_THIS_CCA");
     });
 
@@ -453,7 +499,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       const id = await makeEvent();
       await as(USERS.head, HEAD).publish({ eventID: id });
 
-      const before = await as(USERS.jcrc, JCRC).listAll({ filter: "published" });
+      const before = await as(USERS.jcrc, JCRC).listAll({
+        filter: "published",
+      });
       expect(before.events.find((e) => e.eventID === id)?.isNew).toBe(true);
 
       // The author opening their own event does not clear it.
@@ -478,10 +526,14 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       });
       const jcrc = as(USERS.jcrc, JCRC);
       expect(
-        (await jcrc.listAll({ filter: "published" })).events.some((e) => e.eventID === id),
+        (await jcrc.listAll({ filter: "published" })).events.some(
+          (e) => e.eventID === id,
+        ),
       ).toBe(false);
       expect(
-        (await jcrc.listAll({ filter: "past" })).events.some((e) => e.eventID === id),
+        (await jcrc.listAll({ filter: "past" })).events.some(
+          (e) => e.eventID === id,
+        ),
       ).toBe(true);
     });
 
@@ -499,14 +551,20 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       const id = await makeEvent();
       await as(USERS.head, HEAD).publish({ eventID: id });
       const head = as(USERS.head, HEAD);
-      expect((await head.getQuestionsForOwner({ eventID: id })).frozen).toBe(false);
+      expect((await head.getQuestionsForOwner({ eventID: id })).frozen).toBe(
+        false,
+      );
 
       await setFlag("events.review.required", "on");
-      expect((await head.getQuestionsForOwner({ eventID: id })).frozen).toBe(true);
+      expect((await head.getQuestionsForOwner({ eventID: id })).frozen).toBe(
+        true,
+      );
 
       await setFlag("events.review.required", "off");
       await signUp(id, USERS.resident);
-      expect((await head.getQuestionsForOwner({ eventID: id })).frozen).toBe(true);
+      expect((await head.getQuestionsForOwner({ eventID: id })).frozen).toBe(
+        true,
+      );
     });
 
     it("lets any signed-in resident scan a hall event, and only them", async () => {
@@ -514,10 +572,16 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       const jcrc = as(USERS.jcrc, JCRC);
       expect(
         await errorOf(
-          jcrc.saveScanners({ eventID: id, scannerUserIDs: [USERS.neverSignedIn] }),
+          jcrc.saveScanners({
+            eventID: id,
+            scannerUserIDs: [USERS.neverSignedIn],
+          }),
         ),
       ).toBe(`BAD_REQUEST:NOT_SIGNED_IN:${USERS.neverSignedIn}`);
-      await jcrc.saveScanners({ eventID: id, scannerUserIDs: [USERS.resident] });
+      await jcrc.saveScanners({
+        eventID: id,
+        scannerUserIDs: [USERS.resident],
+      });
       expect((await eventRow(id)).scannerUserIDs).toEqual([USERS.resident]);
     });
   },
