@@ -234,6 +234,11 @@ export const AUDIT_ACTIONS = [
   "ccaHead.grant",
   "ccaHead.revoke",
   "ccaHead.transfer",
+  // JCRC self-handover (services/jcrcHandover.ts): one row per successor,
+  // written by the OUTGOING member. The `jcrc` grant itself is a separate
+  // "set" row from applyRoleChange; this one names the positions and the
+  // step-out date in `reason`.
+  "jcrc.handover",
   // CCA management (/admin/manage-ccas). There is deliberately NO "cca.delete":
   // no surface deletes a CCA, and deleteCcaCascade is script-only and guarded.
   // Do not add one without re-reading cascade.ts — a delete that reaches
