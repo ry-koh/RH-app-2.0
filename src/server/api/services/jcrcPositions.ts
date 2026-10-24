@@ -46,9 +46,7 @@ export function scopeFromPositions(
 ): PositionScope {
   if (positions.length === 0) return "all";
   if (positions.some((p) => p.overseesAll)) return "all";
-  return [...new Set(positions.flatMap((p) => p.ccaIDs))].sort(
-    (a, b) => a - b,
-  );
+  return [...new Set(positions.flatMap((p) => p.ccaIDs))].sort((a, b) => a - b);
 }
 
 /** The CCAs the "My positions" view shows for this user. */
@@ -76,9 +74,7 @@ export async function myPositionCcas(
   return scopeFromPositions(
     positions.map((p) => ({
       overseesAll: p.overseesAll,
-      ccaIDs: links
-        .filter((l) => l.positionID === p.id)
-        .map((l) => l.ccaID),
+      ccaIDs: links.filter((l) => l.positionID === p.id).map((l) => l.ccaID),
     })),
   );
 }
