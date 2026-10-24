@@ -54,9 +54,9 @@ describe("eventErrorMessage", () => {
 
 describe("eventIssueMessage", () => {
   it("keeps the blob-url code friendly", () => {
-    expect(eventIssueMessage({ message: "NOT_A_VALID_EVENT_BLOB_URL" })).toMatch(
-      /Re-upload/,
-    );
+    expect(
+      eventIssueMessage({ message: "NOT_A_VALID_EVENT_BLOB_URL" }),
+    ).toMatch(/Re-upload/);
   });
 
   it("hides zod's own wording", () => {

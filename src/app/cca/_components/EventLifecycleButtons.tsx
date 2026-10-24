@@ -209,7 +209,11 @@ export function RegisterAndPublishButton({
 
   if (!confirming) {
     return (
-      <Button type="button" disabled={disabled} onClick={() => setConfirming(true)}>
+      <Button
+        type="button"
+        disabled={disabled}
+        onClick={() => setConfirming(true)}
+      >
         {pending ? "Publishing…" : "Register and publish"}
       </Button>
     );
@@ -290,7 +294,11 @@ export function WithdrawButton({
 
   if (!confirming) {
     return (
-      <Button type="button" variant="outline" onClick={() => setConfirming(true)}>
+      <Button
+        type="button"
+        variant="outline"
+        onClick={() => setConfirming(true)}
+      >
         Withdraw
       </Button>
     );
@@ -362,7 +370,11 @@ export function DuplicateButton({
 
   if (!confirming) {
     return (
-      <Button type="button" variant="outline" onClick={() => setConfirming(true)}>
+      <Button
+        type="button"
+        variant="outline"
+        onClick={() => setConfirming(true)}
+      >
         Duplicate
       </Button>
     );
@@ -526,7 +538,8 @@ export function DeleteDraftButton({
   const [error, setError] = useState<string | null>(null);
   const remove = api.event.deleteDraft.useMutation({
     onSuccess: onDeleted,
-    onError: (e) => setError(eventErrorMessage(e, "That didn't delete. Try again.")),
+    onError: (e) =>
+      setError(eventErrorMessage(e, "That didn't delete. Try again.")),
   });
 
   if (!confirming) {
