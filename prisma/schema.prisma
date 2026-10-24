@@ -707,6 +707,10 @@ model CcaPointsConfig {
   /// Default row only. Set by "Start new points year" so heads' drafts saved before
   /// it are ignored. Config only (a timestamp); null = no new year started yet.
   yearStartedAt DateTime?
+  /// Default row only. The academic year ("AY2026/27") the current points year
+  /// counts AUX for, set by "Start new points year". Null = never pressed: the
+  /// AUX year then follows the calendar (currentAcademicYear).
+  pointsYear    String?
   updatedAt DateTime?
   updatedBy String?
 }
@@ -936,6 +940,13 @@ model Event {
   /// When a JCRC member other than the owner first opened the event. Until then
   /// the JCRC All events list marks it New.
   jcrcSeenAt        DateTime?
+  /// Non-null = an AUX event, counting 1 AUX per check-in towards this points
+  /// year ("AY2026/27"). Set by the JCRC (never a head); cleared to null when
+  /// unflagged. Deliberately NOT named academicYear: Event is not a
+  /// year-purged collection.
+  auxYear           String?
+  auxSetBy          String?
+  auxSetAt          DateTime?
 
   // Public content — entered BEFORE submission (bannerUrl and publicDescription
   // are both required to leave draft), shown to residents once published.
@@ -975,6 +986,7 @@ model Event {
   @@index([ccaID, status], map: "cca_status")
   @@index([status, startTime], map: "status_start")
   @@index([startTime], map: "start")
+  @@index([auxYear], map: "event_auxYear")
 }
 
 /// One resident's signup for one event. Cancel is a HARD delete (the row is
@@ -1485,6 +1497,62 @@ model JcrcTerm {
   userID String   @unique(map: "jcrcTerm_userID")
   endsAt DateTime
   setAt  DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// AUX (JCRC Portfolios, Events and AUX proposal, Part 3). Every AUX event is
+// worth exactly 1 per check-in; JCRC also gives manual awards (fire warden +1
+// per semester) and records past events that were never in the app. All three
+// are keyed on `academicYear`, the points year they count for, so they are in
+// the retention registry. Only the current points year may be written; past
+// years stay readable. The cap and the conversion to points stay in the
+// sandbox: the app only counts.
+// ---------------------------------------------------------------------------
+
+/// A manual AUX award to one resident. Hard delete (audited).
+model AuxAward {
+  id           String    @id @default(auto()) @map("_id") @db.ObjectId
+  academicYear String
+  userID       String
+  amount       Int
+  reason       String
+  /// The day the award is for (Singapore midnight).
+  awardedOn    DateTime
+  createdBy    String
+  createdAt    DateTime  @default(now())
+  updatedBy    String?
+  updatedAt    DateTime?
+
+  @@index([academicYear, userID], map: "auxAward_year_user")
+}
+
+/// A record-only AUX event: something held before the app tracked it. Never
+/// shown to residents and never an Event row, so no event query sees it.
+model AuxRecord {
+  id           String    @id @default(auto()) @map("_id") @db.ObjectId
+  academicYear String
+  title        String
+  /// The day it was held (Singapore midnight).
+  heldOn       DateTime
+  createdBy    String
+  createdAt    DateTime  @default(now())
+  updatedBy    String?
+  updatedAt    DateTime?
+
+  @@index([academicYear], map: "auxRecord_year")
+}
+
+/// One resident at a record-only AUX event: 1 AUX.
+model AuxRecordAttendee {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  recordID     String   @db.ObjectId
+  academicYear String
+  userID       String
+  addedBy      String
+  addedAt      DateTime @default(now())
+
+  @@unique([recordID, userID], map: "auxRecordAttendee_pair")
+  @@index([academicYear, userID], map: "auxRecordAttendee_year_user")
 }
 
 // ---------------------------------------------------------------------------

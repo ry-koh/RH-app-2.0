@@ -355,7 +355,11 @@ async function resolveAttendees(
   const matricByKey = new Map(matrics.map((m) => [m.userID, m.matric]));
   const profileByKey = new Map<
     string,
-    { displayName: string | null; telegramHandle: string | null; block: number | null }
+    {
+      displayName: string | null;
+      telegramHandle: string | null;
+      block: number | null;
+    }
   >();
   for (const u of users) {
     const cid = canonicalUserID(u.email);
@@ -365,7 +369,8 @@ async function resolveAttendees(
       block: u.block,
     };
     if (cid && !profileByKey.has(cid)) profileByKey.set(cid, value);
-    if (u.userID && !profileByKey.has(u.userID)) profileByKey.set(u.userID, value);
+    if (u.userID && !profileByKey.has(u.userID))
+      profileByKey.set(u.userID, value);
   }
 
   for (const userID of userIDs) {
@@ -533,6 +538,8 @@ const SCRC_HIDDEN_EVENT_FIELDS = {
   decidedBy: null,
   updatedBy: null,
   scannerUserIDs: [],
+  auxSetBy: null,
+  auxSetAt: null,
 } as const satisfies Partial<Record<keyof Event, null | readonly string[]>>;
 
 /**
@@ -1010,7 +1017,8 @@ export const eventRouter = createTRPCRouter({
       // the value on file, not only the payload (the schema can only see both
       // when both are present).
       const nextStart = input.startTime ?? event.startTime;
-      const nextEnd = input.endTime === undefined ? event.endTime : input.endTime;
+      const nextEnd =
+        input.endTime === undefined ? event.endTime : input.endTime;
       if (nextStart != null && nextEnd != null && nextEnd <= nextStart) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -1118,7 +1126,8 @@ export const eventRouter = createTRPCRouter({
       }
       if (input.photoUrls !== undefined) {
         const kept = new Set(input.photoUrls);
-        for (const url of event.photoUrls) if (!kept.has(url)) replaced.push(url);
+        for (const url of event.photoUrls)
+          if (!kept.has(url)) replaced.push(url);
       }
       if (replaced.length > 0) {
         try {
@@ -1475,7 +1484,10 @@ export const eventRouter = createTRPCRouter({
       // Residents who signed up are told why, so a live event needs a reason.
       const reason = input.reason?.trim() || null;
       if (status === "published" && reason === null) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "REASON_REQUIRED" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "REASON_REQUIRED",
+        });
       }
 
       // THE STATUS GOES IN THE `where`, exactly as in `decide` and `withdraw`.
@@ -1528,8 +1540,7 @@ export const eventRouter = createTRPCRouter({
         targetCcaID: event.ccaID ?? undefined,
         targetEventID: event.eventID,
         action: "event.cancel",
-        reason:
-          [event.title, reason].filter(Boolean).join("; ") || undefined,
+        reason: [event.title, reason].filter(Boolean).join("; ") || undefined,
       });
       return { status: "canceled" as const };
     }),
@@ -1874,7 +1885,10 @@ export const eventRouter = createTRPCRouter({
       const signupCount = await ctx.db.eventSignup.count({
         where: { eventID: input.eventID },
       });
-      return { event: { ...event, status: normalizeStatus(event.status) }, signupCount };
+      return {
+        event: { ...event, status: normalizeStatus(event.status) },
+        signupCount,
+      };
     }),
 
   getSignupStats: identifiedProcedure
@@ -2081,7 +2095,8 @@ export const eventRouter = createTRPCRouter({
       return {
         questions,
         signupCount,
-        frozen: !questionsEditableScope(event.status, !reviewRequired) ||
+        frozen:
+          !questionsEditableScope(event.status, !reviewRequired) ||
           signupCount > 0,
       };
     }),
@@ -2336,8 +2351,10 @@ export const eventRouter = createTRPCRouter({
       });
       // "Live" and "past" split published events on when they END, matching
       // the resident timeline: a started event is still on.
-      const isOver = (e: { startTime: number | null; endTime: number | null }) =>
-        e.startTime != null && (e.endTime ?? e.startTime) < now;
+      const isOver = (e: {
+        startTime: number | null;
+        endTime: number | null;
+      }) => e.startTime != null && (e.endTime ?? e.startTime) < now;
       const events =
         input.filter === "published"
           ? rows.filter((e) => !isOver(e))
@@ -2363,6 +2380,7 @@ export const eventRouter = createTRPCRouter({
           location: e.location,
           signupCount: counts.get(e.eventID) ?? 0,
           isNew: e.jcrcSeenAt == null,
+          isAux: e.auxYear != null,
           cancelReason: e.status === "canceled" ? e.decisionReason : null,
         })),
       };
@@ -2518,48 +2536,52 @@ export const eventRouter = createTRPCRouter({
         const startTime = event.startTime;
         const endTime = event.endTime;
         try {
-          const result = await withFacilityLock(ctx.db, facilityID, async () => {
-            const conflicts = await ctx.db.bookings.findMany({
-              where: {
-                facilityID,
-                AND: [
-                  { endTime: { gt: startTime } },
-                  { startTime: { lt: endTime } },
-                ],
-              },
-              select: { id: true },
-            });
-            if (conflicts.length > 0) return { booked: false as const };
-            const bookingID = await nextBookingId(ctx.db);
-            await ctx.db.bookings.create({
-              data: {
-                bookingID,
-                // 0 IS THE RESERVED "no CCA" SENTINEL — see cascade.ts's
-                // RESERVED_CCAID guard and BookingModal.tsx, which writes 0 on
-                // every booking the resident UI creates (3,841 rows and rising).
-                //
-                // A hall event has Event.ccaID null; a Bookings row CANNOT.
-                // Bookings.ccaID is a required Int and MUST NOT become nullable:
-                // that would put a SECOND value meaning "absent" into the largest
-                // collection in the database, where 0 already means it and where
-                // cascade.ts guards only 0. `event.ccaID!` would compile and then
-                // write null into a required Int, surfacing later as a Prisma
-                // throw in someone else's query, on a booking nobody can explain.
-                //
-                // Two collections, two spellings of "no CCA", and that is
-                // correct — they are different namespaces with different
-                // constraints. Do not harmonise them.
-                ccaID: event.ccaID ?? 0,
-                facilityID,
-                startTime,
-                endTime,
-                userID: event.createdBy,
-                eventName: event.title ?? `Event #${event.eventID}`,
-                description: `${EVENT_AUTO_BOOKING_PREFIX}${event.eventID}`,
-              },
-            });
-            return { booked: true as const, bookingID };
-          });
+          const result = await withFacilityLock(
+            ctx.db,
+            facilityID,
+            async () => {
+              const conflicts = await ctx.db.bookings.findMany({
+                where: {
+                  facilityID,
+                  AND: [
+                    { endTime: { gt: startTime } },
+                    { startTime: { lt: endTime } },
+                  ],
+                },
+                select: { id: true },
+              });
+              if (conflicts.length > 0) return { booked: false as const };
+              const bookingID = await nextBookingId(ctx.db);
+              await ctx.db.bookings.create({
+                data: {
+                  bookingID,
+                  // 0 IS THE RESERVED "no CCA" SENTINEL — see cascade.ts's
+                  // RESERVED_CCAID guard and BookingModal.tsx, which writes 0 on
+                  // every booking the resident UI creates (3,841 rows and rising).
+                  //
+                  // A hall event has Event.ccaID null; a Bookings row CANNOT.
+                  // Bookings.ccaID is a required Int and MUST NOT become nullable:
+                  // that would put a SECOND value meaning "absent" into the largest
+                  // collection in the database, where 0 already means it and where
+                  // cascade.ts guards only 0. `event.ccaID!` would compile and then
+                  // write null into a required Int, surfacing later as a Prisma
+                  // throw in someone else's query, on a booking nobody can explain.
+                  //
+                  // Two collections, two spellings of "no CCA", and that is
+                  // correct — they are different namespaces with different
+                  // constraints. Do not harmonise them.
+                  ccaID: event.ccaID ?? 0,
+                  facilityID,
+                  startTime,
+                  endTime,
+                  userID: event.createdBy,
+                  eventName: event.title ?? `Event #${event.eventID}`,
+                  description: `${EVENT_AUTO_BOOKING_PREFIX}${event.eventID}`,
+                },
+              });
+              return { booked: true as const, bookingID };
+            },
+          );
           if (result.booked) {
             // SCOPED ON `published`, and the booking is GIVEN BACK if it does
             // not apply. This write is several round trips after the status
@@ -2948,7 +2970,12 @@ export const eventRouter = createTRPCRouter({
 
       const event = await ctx.db.event.findUnique({
         where: { eventID: input.eventID },
-        select: { eventID: true, status: true, startTime: true, capacity: true },
+        select: {
+          eventID: true,
+          status: true,
+          startTime: true,
+          capacity: true,
+        },
       });
       if (!event || normalizeStatus(event.status) !== "published") {
         throw new TRPCError({ code: "NOT_FOUND", message: "NO_SUCH_EVENT" });
@@ -3538,9 +3565,11 @@ export const eventRouter = createTRPCRouter({
         doorOpens: window?.opensAt ?? null,
         doorCloses: window?.closesAt ?? null,
         byMethod: {
-          qr: attendance.filter((a) => normalizeMethod(a.method) === "qr").length,
-          manual: attendance.filter((a) => normalizeMethod(a.method) === "manual")
+          qr: attendance.filter((a) => normalizeMethod(a.method) === "qr")
             .length,
+          manual: attendance.filter(
+            (a) => normalizeMethod(a.method) === "manual",
+          ).length,
         },
       };
     }),
@@ -3614,7 +3643,9 @@ export const eventRouter = createTRPCRouter({
               select: { eventID: true },
             }),
         eventIDs.length === 0
-          ? Promise.resolve([] as { eventID: number; wasSignedUp: boolean | null }[])
+          ? Promise.resolve(
+              [] as { eventID: number; wasSignedUp: boolean | null }[],
+            )
           : ctx.db.eventAttendance.findMany({
               where: { eventID: { in: eventIDs } },
               select: { eventID: true, wasSignedUp: true },
@@ -3655,13 +3686,23 @@ export const eventRouter = createTRPCRouter({
       // "Hall" is one row rather than one row per hall event.
       const byCcaMap = new Map<
         string,
-        { ccaID: number | null; ccaName: string | null; events: number; signups: number; checkedIn: number }
+        {
+          ccaID: number | null;
+          ccaName: string | null;
+          events: number;
+          signups: number;
+          checkedIn: number;
+        }
       >();
       for (const r of rows) {
         const key = r.ccaID == null ? "hall" : String(r.ccaID);
-        const cur =
-          byCcaMap.get(key) ??
-          { ccaID: r.ccaID, ccaName: r.ccaName, events: 0, signups: 0, checkedIn: 0 };
+        const cur = byCcaMap.get(key) ?? {
+          ccaID: r.ccaID,
+          ccaName: r.ccaName,
+          events: 0,
+          signups: 0,
+          checkedIn: 0,
+        };
         cur.events += 1;
         cur.signups += r.signups;
         cur.checkedIn += r.checkedIn;

@@ -382,6 +382,18 @@ export const AUDIT_ACTIONS = [
   // ERASES a claim about where a person physically was, and after it there
   // is no row left to carry that fact.
   "event.checkin.undo",
+  // AUX (Part 3). Every write is audited: AUX counts towards points, and the
+  // JCRC can add or remove a resident's attendance by hand.
+  "aux.event.flag",
+  "aux.event.unflag",
+  "aux.attendee.add",
+  "aux.attendee.remove",
+  "aux.record.create",
+  "aux.record.edit",
+  "aux.record.delete",
+  "aux.award.create",
+  "aux.award.edit",
+  "aux.award.delete",
   // Admin CRUD over USER DETAILS (/admin/users detail dialog). NOTE what is
   // absent: no "user.create" (signup + PendingRoleGrant own onboarding) and no
   // role action — these endpoints are NOT a second writer of UserRole.roles

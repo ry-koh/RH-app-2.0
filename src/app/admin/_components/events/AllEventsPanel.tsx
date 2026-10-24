@@ -125,6 +125,11 @@ export default function AllEventsPanel() {
                       >
                         {meta.label}
                       </span>
+                      {e.isAux && (
+                        <span className="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-800">
+                          AUX
+                        </span>
+                      )}
                       {e.isNew && (
                         <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-800">
                           New

@@ -3,6 +3,7 @@ import { facilityBookingRouter } from "~/server/api/routers/facilitiesBooking";
 import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
 import { userRouter } from "./routers/user";
 import { adminRouter } from "./routers/admin";
+import { auxRouter } from "./routers/auxPoints";
 import { ccaRouter } from "./routers/cca";
 import { ccaAdminRouter } from "./routers/ccaAdmin";
 import { ccaApplicationsRouter } from "./routers/ccaApplications";
@@ -65,6 +66,8 @@ export const appRouter = createTRPCRouter({
    * bundleExportData (the sandbox bundle, audited). See routers/ccaPoints.ts.
    */
   ccaPoints: ccaPointsRouter,
+  /** AUX counts for points: JCRC only (manageCcaPointsRanges). See routers/auxPoints.ts. */
+  aux: auxRouter,
   /** Events: head authoring, JCRC review, resident timeline + signup. Behind
    * the events.enabled switch; object-scoped per event's ccaID. */
   event: eventRouter,
