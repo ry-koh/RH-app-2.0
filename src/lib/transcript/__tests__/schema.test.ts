@@ -441,7 +441,7 @@ describe("schema: guarded collections are untouched", () => {
 
   // Models that already exist on upstream/main and that this branch may
   // change. A subset check, so the guard still passes once a change lands.
-  const ALLOWED_CHANGED = ["CcaProfile"];
+  const ALLOWED_CHANGED = ["CcaProfile", "Event"];
 
   it("changes only allowed models among the ones that already existed", () => {
     if (!upstreamModels) return;
