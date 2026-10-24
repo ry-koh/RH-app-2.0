@@ -1,13 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import type { createCaller as CreateCaller } from "~/server/api/root";
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-} from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { isLocalDevDatabase } from "../transcript/__tests__/localDbGate";
 
 /**
@@ -71,13 +64,19 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         select: { id: true },
       });
       const ids = positions.map((p) => p.id);
-      await db.jcrcPositionCca.deleteMany({ where: { positionID: { in: ids } } });
+      await db.jcrcPositionCca.deleteMany({
+        where: { positionID: { in: ids } },
+      });
       await db.jcrcPositionHolder.deleteMany({
-        where: { OR: [{ positionID: { in: ids } }, { userID: { in: ALL_IDS } }] },
+        where: {
+          OR: [{ positionID: { in: ids } }, { userID: { in: ALL_IDS } }],
+        },
       });
       await db.jcrcPosition.deleteMany({ where: { id: { in: ids } } });
       await db.jcrcTerm.deleteMany({ where: { userID: { in: ALL_IDS } } });
-      await db.pendingRoleGrant.deleteMany({ where: { userID: { in: ALL_IDS } } });
+      await db.pendingRoleGrant.deleteMany({
+        where: { userID: { in: ALL_IDS } },
+      });
       await db.userRole.deleteMany({ where: { userID: { in: ALL_IDS } } });
       await db.roleAuditLog.deleteMany({
         where: {
@@ -91,7 +90,13 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
 
     const setRoles = (userID: string, roles: string[]) =>
       db.userRole.create({
-        data: { userID, roles, role: "", updatedAt: new Date(), updatedBy: "test" },
+        data: {
+          userID,
+          roles,
+          role: "",
+          updatedAt: new Date(),
+          updatedBy: "test",
+        },
       });
     const rolesOf = async (userID: string) =>
       (await db.userRole.findUnique({ where: { userID } }))?.roles ?? [];
@@ -161,9 +166,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       expect(await errorOf(me.setCcas({ id, ccaIDs: [123456] }))).toBe(
         "BAD_REQUEST:UNKNOWN_CCA",
       );
-      expect(
-        await errorOf(me.addHolder({ id, userID: USERS.successor })),
-      ).toBe("BAD_REQUEST:TARGET_NOT_JCRC");
+      expect(await errorOf(me.addHolder({ id, userID: USERS.successor }))).toBe(
+        "BAD_REQUEST:TARGET_NOT_JCRC",
+      );
     });
 
     it("scopes the My positions view: none or oversees-all means every CCA", async () => {
@@ -172,12 +177,21 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
 
       const sports = await makePosition("Sports", [9002, 9001]);
       const culture = await makePosition("Culture", [9003, 9002]);
-      await me.addHolder({ id: sports, userID: USERS.outgoing });
-      await me.addHolder({ id: culture, userID: USERS.outgoing });
+      await as(USERS.admin, ["resident", "admin"]).addHolder({
+        id: sports,
+        userID: USERS.outgoing,
+      });
+      await as(USERS.admin, ["resident", "admin"]).addHolder({
+        id: culture,
+        userID: USERS.outgoing,
+      });
       expect((await me.mine()).scope).toEqual([9001, 9002, 9003]);
 
       const president = await makePosition("President", [], true);
-      await me.addHolder({ id: president, userID: USERS.outgoing });
+      await as(USERS.admin, ["resident", "admin"]).addHolder({
+        id: president,
+        userID: USERS.outgoing,
+      });
       expect((await me.mine()).scope).toBe("all");
     });
 
@@ -185,9 +199,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       expect(await errorOf(as(USERS.successor, ["resident"]).list())).toBe(
         "FORBIDDEN:INSUFFICIENT_ROLE",
       );
-      expect(
-        await errorOf(as(USERS.rf, ["resident", "scrc"]).list()),
-      ).toBe("FORBIDDEN:INSUFFICIENT_ROLE");
+      expect(await errorOf(as(USERS.rf, ["resident", "scrc"]).list())).toBe(
+        "FORBIDDEN:INSUFFICIENT_ROLE",
+      );
     });
 
     it("lists current JCRC members as holder candidates, and nobody else", async () => {
@@ -200,10 +214,15 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
     });
 
     describe("handover", () => {
+      // Positions are assigned by someone else: a member can't assign
+      // themselves, and a self-assigned row never qualifies for a handover.
+      const assign = (id: string, userID: string) =>
+        as(USERS.admin, ["resident", "admin"]).addHolder({ id, userID });
+
       it("gives successors jcrc and the position now, and ends the outgoing term later", async () => {
         const me = as(USERS.outgoing, JCRC);
         const id = await makePosition("Welfare", [9004]);
-        await me.addHolder({ id, userID: USERS.outgoing });
+        await assign(id, USERS.outgoing);
 
         const stepOutAt = new Date(Date.now() + 7 * DAY);
         const result = await me.handOver({
@@ -232,7 +251,7 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       it("drops jcrc live once the step-out date passes, then sweeps it from storage", async () => {
         const me = as(USERS.outgoing, JCRC);
         const id = await makePosition("Media", [9005]);
-        await me.addHolder({ id, userID: USERS.outgoing });
+        await assign(id, USERS.outgoing);
         await me.handOver({
           positionIDs: [id],
           successorIDs: [USERS.successor],
@@ -265,7 +284,7 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       it("ends the term immediately for a step-out of now", async () => {
         const me = as(USERS.outgoing, JCRC);
         const id = await makePosition("Finance", [9006]);
-        await me.addHolder({ id, userID: USERS.outgoing });
+        await assign(id, USERS.outgoing);
         await me.handOver({
           positionIDs: [id],
           successorIDs: [USERS.successor],
@@ -279,8 +298,8 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         const me = as(USERS.outgoing, JCRC);
         const a = await makePosition("Social", [9007]);
         const b = await makePosition("Hon Gen Sec", [9008]);
-        await me.addHolder({ id: a, userID: USERS.outgoing });
-        await me.addHolder({ id: b, userID: USERS.outgoing });
+        await assign(a, USERS.outgoing);
+        await assign(b, USERS.outgoing);
         const result = await me.handOver({
           positionIDs: [a],
           successorIDs: [USERS.successor],
@@ -295,7 +314,7 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       it("moves and cancels a pending step-out", async () => {
         const me = as(USERS.outgoing, JCRC);
         const id = await makePosition("VP Internal", [9009]);
-        await me.addHolder({ id, userID: USERS.outgoing });
+        await assign(id, USERS.outgoing);
         await me.handOver({
           positionIDs: [id],
           successorIDs: [USERS.successor],
@@ -305,7 +324,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         expect((await me.setStepOut({ stepOutAt: later })).termEndsAt).toEqual(
           later,
         );
-        expect((await me.setStepOut({ stepOutAt: null })).termEndsAt).toBeNull();
+        expect(
+          (await me.setStepOut({ stepOutAt: null })).termEndsAt,
+        ).toBeNull();
         expect(
           await db.jcrcTerm.findUnique({ where: { userID: USERS.outgoing } }),
         ).toBeNull();
@@ -314,20 +335,98 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         );
       });
 
-      it("queues a pending grant for a successor who never signed in", async () => {
+      it("refuses a successor who never signed in, writing nothing", async () => {
         const me = as(USERS.outgoing, JCRC);
         const id = await makePosition("VP External", [9010]);
-        await me.addHolder({ id, userID: USERS.outgoing });
-        const result = await me.handOver({
+        await assign(id, USERS.outgoing);
+        expect(
+          await errorOf(
+            me.handOver({
+              positionIDs: [id],
+              successorIDs: [USERS.successor, USERS.neverSignedIn],
+              stepOutAt: new Date(Date.now() + DAY),
+            }),
+          ),
+        ).toBe("FORBIDDEN:SUCCESSOR_NOT_SIGNED_IN");
+        expect(await rolesOf(USERS.successor)).not.toContain("jcrc");
+        expect(
+          await db.pendingRoleGrant.findUnique({
+            where: { userID: USERS.neverSignedIn },
+          }),
+        ).toBeNull();
+      });
+
+      it("cannot be used to mint jcrc: no self-assignment, one handover per assignment", async () => {
+        const me = as(USERS.outgoing, JCRC);
+        const id = await makePosition("Sports", [9012]);
+        expect(
+          await errorOf(me.addHolder({ id, userID: USERS.outgoing })),
+        ).toBe("FORBIDDEN:SELF_ASSIGN");
+
+        // A row the caller assigned themselves (only an admin can) never hands over.
+        await db.jcrcPositionHolder.create({
+          data: {
+            positionID: id,
+            userID: USERS.outgoing,
+            assignedBy: USERS.outgoing,
+          },
+        });
+        const step = new Date(Date.now() + DAY);
+        expect(
+          await errorOf(
+            me.handOver({
+              positionIDs: [id],
+              successorIDs: [USERS.successor],
+              stepOutAt: step,
+            }),
+          ),
+        ).toBe("FORBIDDEN:SELF_ASSIGNED_POSITION");
+
+        // Assigned by someone else: one handover, then cancelling the
+        // step-out does not allow a second.
+        await assign(id, USERS.outgoing);
+        await me.handOver({
           positionIDs: [id],
-          successorIDs: [USERS.neverSignedIn],
+          successorIDs: [USERS.successor],
+          stepOutAt: step,
+        });
+        await me.setStepOut({ stepOutAt: null });
+        expect(
+          await errorOf(
+            me.handOver({
+              positionIDs: [id],
+              successorIDs: [USERS.second],
+              stepOutAt: step,
+            }),
+          ),
+        ).toBe("FORBIDDEN:ALREADY_HANDED_OVER");
+        expect(await rolesOf(USERS.second)).not.toContain("jcrc");
+
+        // The successor got the row from the handover, so they can hand on.
+        const next = await as(USERS.successor, JCRC).handOver({
+          positionIDs: [id],
+          successorIDs: [USERS.second],
+          stepOutAt: step,
+        });
+        expect(next.granted).toEqual([USERS.second]);
+      });
+
+      it("a re-assigned position clears a step-out left over from a handover", async () => {
+        const me = as(USERS.outgoing, JCRC);
+        const id = await makePosition("Arts", [9013]);
+        await assign(id, USERS.outgoing);
+        await me.handOver({
+          positionIDs: [id],
+          successorIDs: [USERS.successor],
           stepOutAt: new Date(Date.now() + DAY),
         });
-        expect(result.pending).toEqual([USERS.neverSignedIn]);
-        const grant = await db.pendingRoleGrant.findUnique({
-          where: { userID: USERS.neverSignedIn },
-        });
-        expect(grant?.roles).toEqual(["jcrc"]);
+        expect(
+          await db.jcrcTerm.findUnique({ where: { userID: USERS.outgoing } }),
+        ).not.toBeNull();
+        await assign(id, USERS.outgoing);
+        expect(
+          await db.jcrcTerm.findUnique({ where: { userID: USERS.outgoing } }),
+        ).toBeNull();
       });
 
       it("refuses positions the caller does not hold, staff successors and self", async () => {
@@ -344,7 +443,7 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           ),
         ).toBe("FORBIDDEN:NOT_YOUR_POSITION");
 
-        await me.addHolder({ id, userID: USERS.outgoing });
+        await assign(id, USERS.outgoing);
         expect(
           await errorOf(
             me.handOver({

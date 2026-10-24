@@ -6,7 +6,6 @@ import { getUserRoles } from "~/server/api/services/access";
 import { activeHolderWhere } from "~/server/api/services/jcrcPositions";
 import {
   ADMIN_ROLE,
-  forbiddenRoleCombination,
   holdsStaffRole,
   isGrantableRole,
   JCRC_ROLE,
@@ -28,10 +27,22 @@ import {
  * goes through applyRoleChange, so the exclusion pair, the compare-and-set and
  * the audit row all still apply. RFs and Hall Office keep appointing and
  * removing JCRC directly from the staff page.
+ *
+ * WHAT STOPS THIS FROM MINTING JCRC. Holding a position is the only gate, so
+ * holding must not be something a member can give themselves, or repeat:
+ *  - a holder row the caller assigned to themselves never qualifies (and
+ *    addHolder refuses self-assignment for anyone but an admin);
+ *  - each holder row hands over ONCE (`handedOverAt`). Cancelling the step-out
+ *    keeps the position but not a second handover; someone else has to assign
+ *    the position again first.
+ * Every grant is still audited as `jcrc.handover`.
+ *
+ * SUCCESSORS MUST HAVE SIGNED IN. A pending grant is redeemed against the
+ * granter's own assignable roles, and a jcrc may assign none, so a queued
+ * `jcrc` would be refused at the successor's first login. Rather than widen
+ * redemption, the handover asks the successor to sign in once first.
  */
 
-/** Same cap as createPendingGrants: a grant is a bearer credential. */
-const PENDING_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const HANDOVER_REASON_MAX = 500;
 
 export type HandoverInput = {
@@ -45,8 +56,6 @@ export type HandoverInput = {
 export type HandoverResult = {
   /** Successors who now hold `jcrc`. */
   granted: string[];
-  /** Successors who have never signed in: a pending grant waits for them. */
-  pending: string[];
   /** When the outgoing member's `jcrc` ends, or null if they keep it. */
   termEndsAt: Date | null;
 };
@@ -64,8 +73,7 @@ function storedRoles(
 
 type SuccessorPlan = {
   userID: string;
-  /** null: never signed in, so the grant waits in PendingRoleGrant. */
-  stored: string[] | null;
+  stored: string[];
 };
 
 async function planSuccessors(
@@ -80,11 +88,12 @@ async function planSuccessors(
     where: { userID: { in: ids } },
     select: { userID: true, roles: true, role: true },
   });
+  // Every check runs before anything is written, so a refusal writes nothing.
   return ids.map((userID) => {
-    const row = rows.find((r) => r.userID === userID) ?? null;
-    const stored = row ? storedRoles(row) : null;
-    // The exclusion pair, checked up front so a refusal writes nothing.
-    if (stored && holdsStaffRole(stored)) refuse("SUCCESSOR_IS_STAFF");
+    const row = rows.find((r) => r.userID === userID);
+    if (!row) refuse("SUCCESSOR_NOT_SIGNED_IN");
+    const stored = storedRoles(row!);
+    if (holdsStaffRole(stored)) refuse("SUCCESSOR_IS_STAFF");
     return { userID, stored };
   });
 }
@@ -95,64 +104,24 @@ async function grantJcrc(
   actorRoles: string[],
   plan: SuccessorPlan,
   reason: string,
-  now: Date,
-): Promise<"granted" | "pending"> {
-  if (plan.stored === null) {
-    const prior = await db.pendingRoleGrant.findUnique({
-      where: { userID: plan.userID },
-    });
-    const roles = [...new Set([...(prior?.roles ?? []), JCRC_ROLE])];
-    if (forbiddenRoleCombination(roles)) refuse("SUCCESSOR_IS_STAFF");
-    const expiresAt = new Date(now.getTime() + PENDING_TTL_MS);
-    const laterExpiry =
-      prior && prior.expiresAt > expiresAt ? prior.expiresAt : expiresAt;
-    await db.pendingRoleGrant.upsert({
-      where: { userID: plan.userID },
-      create: {
-        userID: plan.userID,
-        roles,
-        createdBy: actorUserID,
-        createdByRoles: actorRoles,
-        expiresAt: laterExpiry,
-        reason,
-      },
-      update: {
-        roles,
-        expiresAt: laterExpiry,
-        createdBy: actorUserID,
-        createdByRoles: actorRoles,
-        reason,
-      },
-    });
-    await writeAudit(db, {
+): Promise<void> {
+  if (!plan.stored.includes(ADMIN_ROLE) && !plan.stored.includes(JCRC_ROLE)) {
+    const before = plan.stored.filter(isGrantableRole);
+    await applyRoleChange({
+      db,
       actorUserID,
       actorRoles,
       targetUserID: plan.userID,
-      action: "pending.create",
-      rolesAfter: roles,
+      before,
+      after: [...before, JCRC_ROLE],
+      added: [JCRC_ROLE],
+      removed: [],
       reason,
     });
-    return "pending";
   }
-
-  // A successor taking on a position starts a fresh term.
+  // A successor taking on a position starts a fresh term. Cleared only once
+  // the grant has landed, so a failed grant leaves an existing term alone.
   await db.jcrcTerm.deleteMany({ where: { userID: plan.userID } });
-  if (plan.stored.includes(ADMIN_ROLE) || plan.stored.includes(JCRC_ROLE)) {
-    return "granted";
-  }
-  const before = plan.stored.filter(isGrantableRole);
-  await applyRoleChange({
-    db,
-    actorUserID,
-    actorRoles,
-    targetUserID: plan.userID,
-    before,
-    after: [...before, JCRC_ROLE],
-    added: [JCRC_ROLE],
-    removed: [],
-    reason,
-  });
-  return "granted";
 }
 
 /**
@@ -190,9 +159,13 @@ export async function handOverPositions(
       positionID: { in: positionIDs },
       ...activeHolderWhere(now),
     },
-    select: { positionID: true },
+    select: { positionID: true, assignedBy: true, handedOverAt: true },
   });
   if (held.length !== positionIDs.length) refuse("NOT_YOUR_POSITION");
+  if (held.some((h) => h.assignedBy === actorUserID)) {
+    refuse("SELF_ASSIGNED_POSITION");
+  }
+  if (held.some((h) => h.handedOverAt != null)) refuse("ALREADY_HANDED_OVER");
 
   const positions = await db.jcrcPosition.findMany({
     where: { id: { in: positionIDs } },
@@ -211,18 +184,13 @@ export async function handOverPositions(
 
   const plans = await planSuccessors(db, actorUserID, input.successorIDs);
 
+  // NOT ATOMIC: successors are granted one by one. A failure part-way leaves
+  // the earlier successors granted and the caller's own rows untouched, and a
+  // retry is safe (every write here is an idempotent upsert or a no-op).
   const granted: string[] = [];
-  const pending: string[] = [];
   for (const plan of plans) {
-    const outcome = await grantJcrc(
-      db,
-      actorUserID,
-      actorRoles,
-      plan,
-      reason,
-      now,
-    );
-    (outcome === "granted" ? granted : pending).push(plan.userID);
+    await grantJcrc(db, actorUserID, actorRoles, plan, reason);
+    granted.push(plan.userID);
     for (const positionID of positionIDs) {
       await db.jcrcPositionHolder.upsert({
         where: { positionID_userID: { positionID, userID: plan.userID } },
@@ -232,7 +200,12 @@ export async function handOverPositions(
           assignedBy: actorUserID,
           endsAt: null,
         },
-        update: { endsAt: null, assignedBy: actorUserID, assignedAt: now },
+        update: {
+          endsAt: null,
+          handedOverAt: null,
+          assignedBy: actorUserID,
+          assignedAt: now,
+        },
       });
     }
     await writeAudit(db, {
@@ -246,7 +219,7 @@ export async function handOverPositions(
 
   await db.jcrcPositionHolder.updateMany({
     where: { userID: actorUserID, positionID: { in: positionIDs } },
-    data: { endsAt: stepOutAt },
+    data: { endsAt: stepOutAt, handedOverAt: now },
   });
   const termEndsAt = await termEndFor(db, actorUserID);
   if (termEndsAt) {
@@ -257,7 +230,7 @@ export async function handOverPositions(
     });
   }
   if (stepOutAt.getTime() <= now.getTime()) await sweepEndedJcrcTerms(db, now);
-  return { granted, pending, termEndsAt };
+  return { granted, termEndsAt };
 }
 
 /**
@@ -322,6 +295,8 @@ export async function sweepEndedJcrcTerms(
     });
     const before = storedRoles(row).filter(isGrantableRole);
     if (before.includes(JCRC_ROLE)) {
+      // One bad term must not fail the sweep, which runs on a read: log it,
+      // leave it for the next sweep, and carry on.
       try {
         await applyRoleChange({
           db,
@@ -335,8 +310,17 @@ export async function sweepEndedJcrcTerms(
           reason: "JCRC handover: step-out date reached",
         });
       } catch (err) {
-        if (err instanceof TRPCError && err.code === "CONFLICT") continue;
-        throw err;
+        if (!(err instanceof TRPCError && err.code === "CONFLICT")) {
+          console.error(
+            JSON.stringify({
+              evt: "jcrc_term_sweep_failed",
+              userID: term.userID,
+              // The name only: a driver message can carry stored values.
+              error: err instanceof Error ? err.name : typeof err,
+            }),
+          );
+        }
+        continue;
       }
       ended += 1;
     }

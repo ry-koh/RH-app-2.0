@@ -287,12 +287,19 @@ export const jcrcPositionsRouter = createTRPCRouter({
   /**
    * Adds a holder. The person must already hold `jcrc`: appointing JCRC is the
    * RFs' and Hall Office's job (or the handover's), not this list's.
+   *
+   * NO SELF-ASSIGNMENT, except by an admin. A held position is what lets a
+   * member hand `jcrc` on (services/jcrcHandover.ts), so a member must not be
+   * able to give themselves one.
    */
   addHolder: roleManagerProcedure
     .input(z.object({ id: objectIDSchema, userID: userIDSchema }))
     .mutation(async ({ ctx, input }) => {
       const actor = ctx.session.user.userID;
-      await assertManager(ctx.db, actor);
+      const actorRoles = await assertManager(ctx.db, actor);
+      if (input.userID === actor && !actorRoles.includes(ADMIN_ROLE)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "SELF_ASSIGN" });
+      }
       await assertPositionExists(ctx.db, input.id);
       const targetRoles = await getUserRoles(ctx.db, input.userID);
       if (!targetRoles.includes(JCRC_ROLE)) {
@@ -311,8 +318,15 @@ export const jcrcPositionsRouter = createTRPCRouter({
           assignedBy: actor,
           endsAt: null,
         },
-        update: { endsAt: null, assignedBy: actor, assignedAt: new Date() },
+        update: {
+          endsAt: null,
+          handedOverAt: null,
+          assignedBy: actor,
+          assignedAt: new Date(),
+        },
       });
+      // An open position means no term end: drop any step-out left over.
+      await ctx.db.jcrcTerm.deleteMany({ where: { userID: input.userID } });
       return { id: input.id, userID: input.userID };
     }),
 

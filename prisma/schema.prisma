@@ -1456,12 +1456,15 @@ model JcrcPositionCca {
 /// `endsAt` is set by a JCRC self-handover: the outgoing holder keeps the
 /// position until then, and every read treats a row past `endsAt` as gone.
 model JcrcPositionHolder {
-  id         String    @id @default(auto()) @map("_id") @db.ObjectId
-  positionID String    @db.ObjectId
-  userID     String
-  assignedAt DateTime  @default(now())
-  assignedBy String
-  endsAt     DateTime?
+  id           String    @id @default(auto()) @map("_id") @db.ObjectId
+  positionID   String    @db.ObjectId
+  userID       String
+  assignedAt   DateTime  @default(now())
+  assignedBy   String
+  endsAt       DateTime?
+  /// Set when this holder hands the position over. A holder may hand a
+  /// position over once; someone else must assign it again before another.
+  handedOverAt DateTime?
 
   @@unique([positionID, userID], map: "jcrcPositionHolder_pair")
   @@index([userID], map: "jcrcPositionHolder_userID")

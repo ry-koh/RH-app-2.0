@@ -1102,6 +1102,12 @@ export async function applyRoleChange(opts: {
     throw err;
   }
 
+  // A fresh appointment starts a fresh term: a JcrcTerm left from an earlier
+  // handover would otherwise strip the new `jcrc` (see services/jcrcTerm.ts).
+  if (opts.added.includes(JCRC_ROLE)) {
+    await db.jcrcTerm.deleteMany({ where: { userID: targetUserID } });
+  }
+
   await writeAudit(db, {
     actorUserID,
     actorRoles,

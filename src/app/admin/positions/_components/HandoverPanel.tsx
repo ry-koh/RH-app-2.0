@@ -37,8 +37,8 @@ const parseIDs = (raw: string) =>
 /**
  * JCRC self-handover. Successors get `jcrc` and the positions at once; the
  * caller keeps theirs until the step-out date, then loses the positions and,
- * if those were their last, `jcrc` too. A successor who has never signed in
- * gets the role when they first do (a pending grant, valid 14 days).
+ * if those were their last, `jcrc` too. Successors must have signed in to the
+ * app at least once, and each position can be handed over once per holder.
  */
 export default function HandoverPanel({ mine }: { mine: Mine }) {
   const utils = api.useUtils();
@@ -73,13 +73,7 @@ export default function HandoverPanel({ mine }: { mine: Mine }) {
       setSuccessors("");
       setReason("");
       setNotice(
-        [
-          r.granted.length > 0 && `${r.granted.length} now on the JCRC.`,
-          r.pending.length > 0 &&
-            `${r.pending.length} will be added when they first sign in (within 14 days).`,
-        ]
-          .filter(Boolean)
-          .join(" "),
+        `${r.granted.length} ${r.granted.length === 1 ? "person is" : "people are"} now on the JCRC.`,
       );
       await refresh();
     },
