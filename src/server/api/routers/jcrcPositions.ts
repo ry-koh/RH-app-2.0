@@ -153,6 +153,26 @@ export const jcrcPositionsRouter = createTRPCRouter({
     };
   }),
 
+  /** Current JCRC members: the people a position can be given to. */
+  jcrcMembers: roleManagerProcedure.query(async ({ ctx }) => {
+    await assertManager(ctx.db, ctx.session.user.userID);
+    const rows = await ctx.db.userRole.findMany({
+      where: { OR: [{ roles: { has: JCRC_ROLE } }, { role: JCRC_ROLE }] },
+      select: { userID: true },
+    });
+    const userIDs = rows.map((r) => r.userID);
+    const users = await ctx.db.user.findMany({
+      where: { userID: { in: userIDs } },
+      select: { userID: true, displayName: true, email: true },
+    });
+    return userIDs
+      .map((userID) => {
+        const user = users.find((u) => u.userID === userID);
+        return { userID, name: user?.displayName ?? user?.email ?? userID };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }),
+
   create: roleManagerProcedure
     .input(
       z.object({
@@ -276,7 +296,10 @@ export const jcrcPositionsRouter = createTRPCRouter({
       await assertPositionExists(ctx.db, input.id);
       const targetRoles = await getUserRoles(ctx.db, input.userID);
       if (!targetRoles.includes(JCRC_ROLE)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "TARGET_NOT_JCRC" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "TARGET_NOT_JCRC",
+        });
       }
       await ctx.db.jcrcPositionHolder.upsert({
         where: {

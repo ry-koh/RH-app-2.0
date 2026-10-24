@@ -190,6 +190,15 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       ).toBe("FORBIDDEN:INSUFFICIENT_ROLE");
     });
 
+    it("lists current JCRC members as holder candidates, and nobody else", async () => {
+      const members = await as(USERS.outgoing, JCRC).jcrcMembers();
+      const ids = members.map((m) => m.userID);
+      expect(ids).toContain(USERS.outgoing);
+      expect(ids).not.toContain(USERS.successor);
+      expect(ids).not.toContain(USERS.rf);
+      expect(ids).not.toContain(USERS.admin);
+    });
+
     describe("handover", () => {
       it("gives successors jcrc and the position now, and ends the outgoing term later", async () => {
         const me = as(USERS.outgoing, JCRC);
