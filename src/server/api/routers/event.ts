@@ -61,6 +61,11 @@ import {
   planLiveEdit,
   type LiveEdit,
 } from "~/server/api/services/eventLiveEdit";
+import {
+  noticeEventCanceled,
+  noticeEventDecided,
+  noticeEventEdited,
+} from "~/server/api/services/eventNotices";
 import { canonicalUserID } from "~/lib/identity";
 import {
   createEventInput,
@@ -1112,6 +1117,7 @@ export const eventRouter = createTRPCRouter({
           action: "event.edit",
           reason: `Changed ${liveEdit.changed.join(", ")}`,
         });
+        await noticeEventEdited(ctx.db, event, liveEdit.changed);
       }
 
       // Delete blobs this save replaced/removed (non-fatal). Every URL here was
@@ -1542,6 +1548,8 @@ export const eventRouter = createTRPCRouter({
         action: "event.cancel",
         reason: [event.title, reason].filter(Boolean).join("; ") || undefined,
       });
+      if (status === "published")
+        await noticeEventCanceled(ctx.db, event, reason);
       return { status: "canceled" as const };
     }),
 
@@ -1709,6 +1717,7 @@ export const eventRouter = createTRPCRouter({
         action: "event.cancel",
         reason: input.reason,
       });
+      await noticeEventCanceled(ctx.db, event, input.reason);
       return { status: "canceled" as const };
     }),
 
@@ -2654,6 +2663,7 @@ export const eventRouter = createTRPCRouter({
                 ? `${input.reason ? input.reason + "; " : ""}facility #${event.facilityID} booked then released — event no longer published`
                 : (input.reason ?? undefined),
       });
+      await noticeEventDecided(ctx.db, event, input.decision, input.reason);
       return {
         status: nextStatus as "published" | "changes_requested" | "declined",
         autoBook,
