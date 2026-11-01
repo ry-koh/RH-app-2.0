@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import type { createCaller as CreateCaller } from "~/server/api/root";
+import type * as TransitionModule from "../proposals/transition";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { isLocalDevDatabase } from "../transcript/__tests__/localDbGate";
 
@@ -30,7 +31,11 @@ const CCA_A = 9001;
 const CCA_B = 9002;
 const CCA_C = 9003;
 const CCAS = [CCA_A, CCA_B, CCA_C];
-const FLAGS = ["proposals.enabled", "directors.enabled", "notifications.enabled"];
+const FLAGS = [
+  "proposals.enabled",
+  "directors.enabled",
+  "notifications.enabled",
+];
 /** Session roles that claim every power: the server must not believe them. */
 const EVERYTHING = ["resident", "admin", "jcrc", "cca_head", "scrc"];
 const START = 1_900_000_000;
@@ -41,7 +46,7 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
   () => {
     let db: PrismaClient;
     let createCaller: typeof CreateCaller;
-    let transition: typeof import("../proposals/transition");
+    let transition: typeof TransitionModule;
     const original: Record<string, string | null> = {};
     let ipCounter = 0;
 
@@ -357,9 +362,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
             as(U.headA).update({ id: made.id, version: 0, title: "Two" }),
           ),
         ).toBe("CONFLICT:PROPOSAL_CONFLICT");
-        expect((await db.proposal.findUnique({ where: { id: made.id } }))?.title).toBe(
-          "One",
-        );
+        expect(
+          (await db.proposal.findUnique({ where: { id: made.id } }))?.title,
+        ).toBe("One");
 
         await as(U.headA).submit({ id: made.id, version: 1 });
         expect(
@@ -493,11 +498,13 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         expect(seen.createdByMe).toBe(false);
         expect((await director.list({ ccaID: CCA_A })).items).toHaveLength(1);
         expect(
-          await errorOf(director.update({ id: made.id, version: 1, title: "x" })),
+          await errorOf(
+            director.update({ id: made.id, version: 1, title: "x" }),
+          ),
         ).toBe("FORBIDDEN:NOT_CCA_HEAD");
-        expect(await errorOf(director.submit({ id: made.id, version: 1 }))).toBe(
-          "FORBIDDEN:NOT_CCA_HEAD",
-        );
+        expect(
+          await errorOf(director.submit({ id: made.id, version: 1 })),
+        ).toBe("FORBIDDEN:NOT_CCA_HEAD");
       });
 
       it("a director does not see a draft, in get or in list", async () => {
@@ -509,7 +516,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         );
         expect((await director.list({ ccaID: CCA_A })).items).toEqual([]);
         // The head still does.
-        expect((await as(U.headA).list({ ccaID: CCA_A })).items).toHaveLength(1);
+        expect((await as(U.headA).list({ ccaID: CCA_A })).items).toHaveLength(
+          1,
+        );
       });
 
       it("a director with directors.enabled off is no reader", async () => {
@@ -551,7 +560,8 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
             errorOf(caller.submit({ id: made.id, version: 0 })),
           ]);
 
-          for (const a of answers) expect(a).toBe("FORBIDDEN:PROPOSALS_DISABLED");
+          for (const a of answers)
+            expect(a).toBe("FORBIDDEN:PROPOSALS_DISABLED");
           expect(await caller.enabled()).toEqual({ enabled: false });
           expect(await snapshot(made.id)).toEqual(before);
         },
@@ -688,7 +698,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           await errorOf(as(U.headA).submit({ id: made.id, version: 1 })),
         ).toBe("CONFLICT:PROPOSAL_CONFLICT");
         expect(
-          await db.proposalStatusHistory.count({ where: { proposalID: made.id } }),
+          await db.proposalStatusHistory.count({
+            where: { proposalID: made.id },
+          }),
         ).toBe(1);
       });
 
@@ -708,7 +720,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           "PROPOSAL_CONFLICT",
         );
         expect(
-          await db.proposalStatusHistory.count({ where: { proposalID: made.id } }),
+          await db.proposalStatusHistory.count({
+            where: { proposalID: made.id },
+          }),
         ).toBe(1);
         expect(
           await db.notification.count({
@@ -993,7 +1007,12 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         const answer = await errorOf(
           transition.transitionProposal(
             db,
-            { proposalID: id, from: "in_review", to: "cleared", actorID: U.dirA },
+            {
+              proposalID: id,
+              from: "in_review",
+              to: "cleared",
+              actorID: U.dirA,
+            },
             {
               inTransaction: () => Promise.reject(new Error("no")),
             },
@@ -1060,9 +1079,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           approverID: null,
           selfApproved: true,
         });
-        expect(await db.proposalComment.count({ where: { proposalID: made.id } })).toBe(
-          2,
-        );
+        expect(
+          await db.proposalComment.count({ where: { proposalID: made.id } }),
+        ).toBe(2);
         expect(
           await db.proposalComment.count({
             where: { proposalID: made.id, authorID: null },
@@ -1075,17 +1094,20 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           await db.proposalCommentRead.count({ where: { userID: U.headA2 } }),
         ).toBe(1);
         expect(
-          (await db.proposal.findUnique({ where: { id: theirs.id } }))?.createdBy,
+          (await db.proposal.findUnique({ where: { id: theirs.id } }))
+            ?.createdBy,
         ).toBe(U.headA2);
 
         // The CCA's other head and its director still read all of it.
         const seen = await as(U.headA2).get({ id: made.id });
         expect(seen).toMatchObject({ status: "cleared", createdByMe: false });
         expect(seen.history).toHaveLength(2);
-        expect(seen.history.find((h) => h.toStatus === "cleared")?.selfApproved).toBe(
-          true,
+        expect(
+          seen.history.find((h) => h.toStatus === "cleared")?.selfApproved,
+        ).toBe(true);
+        expect((await as(U.headA2).list({ ccaID: CCA_A })).items).toHaveLength(
+          2,
         );
-        expect((await as(U.headA2).list({ ccaID: CCA_A })).items).toHaveLength(2);
         expect(await errorOf(as(U.dirA).get({ id: made.id }))).toBe("ok");
         // The deleted person's own headship went with the account.
         expect(await errorOf(as(U.headA).list({ ccaID: CCA_A }))).toBe(

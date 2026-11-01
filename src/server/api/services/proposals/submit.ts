@@ -117,10 +117,7 @@ async function noticeOfSubmission(
   // screen is for the CCA's own heads and directors.
   const staff = await tx.userRole.findMany({
     where: {
-      OR: [
-        { roles: { hasSome: STAFF_ROLES } },
-        { role: { in: STAFF_ROLES } },
-      ],
+      OR: [{ roles: { hasSome: STAFF_ROLES } }, { role: { in: STAFF_ROLES } }],
     },
     select: { userID: true },
   });

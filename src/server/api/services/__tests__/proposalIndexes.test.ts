@@ -85,9 +85,9 @@ describe("create-proposal-indexes.mjs mirrors prisma/schema.prisma", () => {
       const declared = schemaIndexes(modelBody(model));
       expect(declared.length).toBeGreaterThan(0);
       expect(shape(TARGETS[model]!)).toEqual(shape(declared));
-      expect(TARGETS[model]!.some((i) => i.expireAfterSeconds !== undefined)).toBe(
-        false,
-      );
+      expect(
+        TARGETS[model]!.some((i) => i.expireAfterSeconds !== undefined),
+      ).toBe(false);
     },
   );
 
@@ -121,7 +121,10 @@ function fakeDb() {
             : {
                 ok: 1,
                 cursor: {
-                  firstBatch: [{ v: 2, key: { _id: 1 }, name: "_id_" }, ...have],
+                  firstBatch: [
+                    { v: 2, key: { _id: 1 }, name: "_id_" },
+                    ...have,
+                  ],
                 },
               },
         );

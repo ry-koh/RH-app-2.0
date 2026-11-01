@@ -77,14 +77,15 @@ function caller(
 const NEW = { ccaID: 7, category: "pubs" as const, title: "Pub night" };
 
 /** Every gated procedure with a valid input. */
-const CALLS: Array<[string, (c: ReturnType<typeof caller>) => Promise<unknown>]> =
-  [
-    ["create", (c) => c.create(NEW)],
-    ["update", (c) => c.update({ id: ID, version: 0, title: "x" })],
-    ["get", (c) => c.get({ id: ID })],
-    ["list", (c) => c.list({ ccaID: 7 })],
-    ["submit", (c) => c.submit({ id: ID, version: 0 })],
-  ];
+const CALLS: Array<
+  [string, (c: ReturnType<typeof caller>) => Promise<unknown>]
+> = [
+  ["create", (c) => c.create(NEW)],
+  ["update", (c) => c.update({ id: ID, version: 0, title: "x" })],
+  ["get", (c) => c.get({ id: ID })],
+  ["list", (c) => c.list({ ccaID: 7 })],
+  ["submit", (c) => c.submit({ id: ID, version: 0 })],
+];
 
 describe("proposals.enabled gates every procedure but `enabled`", () => {
   for (const state of ["off", "absent", "throws"] as const) {

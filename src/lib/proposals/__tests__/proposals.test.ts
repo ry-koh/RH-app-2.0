@@ -122,10 +122,10 @@ describe("category rules", () => {
     for (const category of PROPOSAL_CATEGORIES) {
       const missing = missingForSubmit({ ...bare, category });
       const wants = CATEGORY_REQUIREMENTS[category];
-      expect(missing.some((m) => /start date/.test(m))).toBe(
+      expect(missing.some((m) => m.includes("start date"))).toBe(
         wants.includes("plannedStart"),
       );
-      expect(missing.some((m) => /blast/.test(m))).toBe(
+      expect(missing.some((m) => m.includes("blast"))).toBe(
         wants.includes("blastMessage"),
       );
     }

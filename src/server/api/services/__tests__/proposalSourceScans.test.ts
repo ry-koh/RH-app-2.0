@@ -198,9 +198,12 @@ describe("only transitionProposal writes Proposal.status", () => {
   });
 
   it("no production file other than transition.ts names status in a proposal write", () => {
-    const offenders = SRC_FILES.filter((f) => f !== TRANSITION).flatMap((f) =>
-      statusWriteProblems(read(f)).map((p) => `${f}: ${p}`),
-    );
+    // A client component cannot hold a database client; its `api.proposal` is
+    // the tRPC hook tree, which this scan would otherwise take for a delegate.
+    const isClient = (f: string) => /^\s*["']use client["']/.test(read(f));
+    const offenders = SRC_FILES.filter(
+      (f) => f !== TRANSITION && !isClient(f),
+    ).flatMap((f) => statusWriteProblems(read(f)).map((p) => `${f}: ${p}`));
     expect(offenders).toEqual([]);
   });
 
@@ -262,7 +265,9 @@ describe("A32: events never read or write a proposal", () => {
 describe("proposal access never uses a forgiving read", () => {
   const FILES = [
     "src/server/api/routers/proposal.ts",
-    ...SRC_FILES.filter((f) => f.startsWith("src/server/api/services/proposals/")),
+    ...SRC_FILES.filter((f) =>
+      f.startsWith("src/server/api/services/proposals/"),
+    ),
   ];
 
   it("finds the proposal files", () => {
@@ -304,5 +309,33 @@ describe("proposal access never uses a forgiving read", () => {
     expect(code.match(/\bcatch\b/g)).toHaveLength(1);
     expect(code).toMatch(/if \(isWriteConflict\(err\)\) throw conflict\(\)/);
     expect(code).toMatch(/throw err;/);
+  });
+});
+
+describe("the proposal screens render server text as text", () => {
+  const SCREENS = SRC_FILES.filter(
+    (f) =>
+      f.includes("/cca/_components/Proposal") ||
+      f.includes("/cca/[ccaID]/proposals/") ||
+      f === "src/app/cca/_lib/proposalForm.ts",
+  );
+
+  it("finds the screens", () => {
+    expect(SCREENS.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it("none injects HTML, evaluates a string or calls an event procedure", () => {
+    for (const f of SCREENS) {
+      const code = stripComments(read(f));
+      expect(code, f).not.toMatch(/dangerouslySetInnerHTML|innerHTML/);
+      expect(code, f).not.toMatch(/\beval\(|new Function\(/);
+      expect(code, f).not.toMatch(/api\.event\b/);
+    }
+  });
+
+  it("none sends a status: the screens only save and submit", () => {
+    for (const f of SCREENS) {
+      expect(stripComments(read(f)), f).not.toMatch(/\bstatus\s*:/);
+    }
   });
 });

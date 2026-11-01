@@ -371,10 +371,13 @@ describe("holders of flagged positions who lack jcrc", () => {
   });
 });
 
-describe("isGating: which switch turns a \"not set up\" line RED", () => {
+describe('isGating: which switch turns a "not set up" line RED', () => {
   const off = { flagArg: false, directorsOn: false, proposalsOn: false };
   const noDirector = (c = base()) =>
-    check(evaluateDirectorChecks(c), "CCAs with no current qualifying director");
+    check(
+      evaluateDirectorChecks(c),
+      "CCAs with no current qualifying director",
+    );
   const social = (c = base()) =>
     check(
       evaluateDirectorChecks(c),
