@@ -246,8 +246,7 @@ export const sameKey = (a, b) => {
 };
 
 /** Options on a listed index beyond key/name/unique (collation, sparse, partial...). */
-export const extraOptions = (i) =>
-  Object.keys(i ?? {}).filter((k) => !NEUTRAL.has(k));
+export const extraOptions = (i) => Object.keys(i ?? {}).filter((k) => !NEUTRAL.has(k));
 
 /**
  * Compare what we want with what a collection has. Returns

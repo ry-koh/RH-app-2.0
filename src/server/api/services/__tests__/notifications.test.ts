@@ -104,7 +104,7 @@ describe("notify", () => {
     expect(NOTIFICATION_RETENTION_DAYS).toBe(180);
   });
 
-  it.each(["absent", "off", "throws"] as const)(
+  it.each(["absent", "off"] as const)(
     "writes nothing while the switch is %s",
     async (f) => {
       const { db, createMany } = fakeClient(f);
@@ -113,6 +113,35 @@ describe("notify", () => {
       expect(createMany).not.toHaveBeenCalled();
     },
   );
+
+  it("rejects, and writes nothing, when the flag read fails", async () => {
+    const { db, createMany } = fakeClient("throws");
+
+    await expect(notify(db, valid)).rejects.toThrow("db down");
+    expect(createMany).not.toHaveBeenCalled();
+  });
+
+  it("reads the flag fresh on every call: turning it on counts at once despite a cached off", async () => {
+    const off = fakeClient("off");
+    expect(await areNotificationsEnabled(off.db)).toBe(false); // cached off
+    const on = fakeClient("on");
+
+    const res = await notify(on.db, valid);
+
+    expect(res.written).toBe(1);
+    expect(on.findUnique).toHaveBeenCalledTimes(1);
+    // and notify never trusts or fills the cache: still cached off
+    expect(await areNotificationsEnabled(on.db)).toBe(false);
+  });
+
+  it("asks the database every time, with no cache", async () => {
+    const { db, findUnique } = fakeClient("on");
+
+    await notify(db, valid);
+    await notify(db, valid);
+
+    expect(findUnique).toHaveBeenCalledTimes(2);
+  });
 
   it("lets a failed write propagate, so a caller's transaction rolls back", async () => {
     const { db, createMany } = fakeClient("on");

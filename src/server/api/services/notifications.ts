@@ -87,9 +87,10 @@ const isInAppPath = (href: string) =>
  * caller's `$transaction` and the rows commit or roll back with the caller's
  * own change; pass the plain client for a best-effort notice after the fact.
  *
- * While `notifications.enabled` is off it writes nothing, so rows do not pile
- * up unseen and then surface as stale news the day the switch goes on. That
- * also covers a failed flag read.
+ * While `notifications.enabled` is off (row absent or any value but "on") it
+ * writes nothing, so rows do not pile up unseen and then surface as stale news
+ * the day the switch goes on. The flag is read fresh on every call; a failed
+ * read throws rather than counting as off.
  *
  * Throws on bad input (a programming error in the caller) and on a failed
  * write; it never swallows either, so inside a transaction the caller's change
@@ -119,7 +120,13 @@ export async function notify(
     throw new Error("notify: href must be an in-app path");
   }
   if (recipients.length === 0) return { written: 0 };
-  if (!(await areNotificationsEnabled(db))) return { written: 0 };
+  // Strict read, unlike the cached fail-closed one the router uses: no cache,
+  // no catch. A failed read throws so the caller's transaction rolls back
+  // instead of committing without its notice, and a freshly set flag counts at once.
+  const flag = await db.systemFlag.findUnique({
+    where: { key: NOTIFICATIONS_FLAG_KEY },
+  });
+  if (flag?.value !== "on") return { written: 0 };
 
   const now = new Date();
   const expiresAt = new Date(

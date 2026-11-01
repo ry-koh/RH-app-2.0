@@ -242,6 +242,32 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       expect(await db.systemFlag.findUnique({ where: { key } })).toBeNull();
     });
 
+    it("rolls the caller's change back when the flag read fails", async () => {
+      const key = `${TEST_FLAG_PREFIX}flagreadfail`;
+
+      await expect(
+        db.$transaction(async (tx) => {
+          await tx.systemFlag.create({ data: { key, value: "x" } });
+          const broken = {
+            notification: tx.notification,
+            systemFlag: {
+              findUnique: () => Promise.reject(new Error("flag read failed")),
+            },
+          } as unknown as Parameters<typeof notify>[0];
+          await notify(broken, {
+            recipients: [A],
+            kind: "test.flagfail",
+            title: "never seen",
+          });
+        }),
+      ).rejects.toThrow("flag read failed");
+
+      expect(await db.systemFlag.findUnique({ where: { key } })).toBeNull();
+      expect(
+        await db.notification.count({ where: { userID: { in: IDS } } }),
+      ).toBe(0);
+    });
+
     it('stores and returns a title with < & and " exactly as given', async () => {
       const title = `<script>alert("x")</script> Fish & Chips`;
       const body = `a < b && "c"`;
