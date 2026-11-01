@@ -1,17 +1,23 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 
 /**
- * JCRC POSITIONS — VIEWS ONLY, NEVER PERMISSIONS.
+ * JCRC POSITIONS — VIEWS, EXCEPT FOR A FLAGGED POSITION.
  *
  * A position (President, VP Internal, Sports Director (Internal), ...) lists
- * the CCAs its holders look after. The ONLY thing it does is set the default
+ * the CCAs its holders look after. What it does for everyone is set the default
  * "My positions" filter on JCRC lists; an "All CCAs" switch sits beside it.
- * Every JCRC member keeps every power over every CCA, exactly as before.
+ * Every JCRC member keeps every power over every CCA, exactly as before, and
+ * the existing event, points and CCA guards never read positions.
  *
- * THE RULE: nothing in this file may be used to REFUSE an action. If a guard
- * ever calls myPositionCcas, positions have silently become permissions, and
- * a JCRC member covering for a colleague gets locked out of the very CCA they
- * were asked to help with. Filter lists with it; never authorize with it.
+ * A position an admin has flagged `vetsProposals` or `handlesDisposables` is
+ * ALSO a permission, but only for the director features, and only through
+ * services/directorGuard.ts, which does its own strict reads. Editing a
+ * flagged position is locked (services/jcrcPositionLock.ts).
+ *
+ * THE RULE FOR THIS FILE: nothing in it may be used to REFUSE or GRANT an
+ * action. myPositionCcas returns every CCA for a member with no position and
+ * for an oversees-all holder, so a guard built on it would hand every
+ * unplaced member every CCA. Filter lists with it; never authorize with it.
  */
 
 /** A list's view: the caller's positions, or every CCA. */
