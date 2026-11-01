@@ -151,9 +151,11 @@ export default function AdminShell({
       retry: false,
       staleTime: 60_000,
     }).data?.enabled === true;
-  // Same rule: hidden while off, loading or failed.
+  // Same rule: hidden while off, loading or failed. Only asked for by someone
+  // who would see the tab.
   const feedbackEnabled =
     api.feedback.enabled.useQuery(undefined, {
+      enabled: capabilities.readAuditLog === true,
       retry: false,
       staleTime: 60_000,
     }).data?.enabled === true;

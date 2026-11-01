@@ -114,4 +114,17 @@ describe("the admin Feedback tab", () => {
 
     expect(adminWithFeedback()).toContain("/admin/feedback");
   });
+
+  it("asks for the flag only when the user could see the tab", () => {
+    feedbackQuery.mockReturnValue({ data: { enabled: true } });
+
+    admin();
+    expect(feedbackQuery.mock.calls.at(-1)![1]).toMatchObject({
+      enabled: false,
+    });
+    adminWithFeedback();
+    expect(feedbackQuery.mock.calls.at(-1)![1]).toMatchObject({
+      enabled: true,
+    });
+  });
 });

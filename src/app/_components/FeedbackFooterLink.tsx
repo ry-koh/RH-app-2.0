@@ -1,17 +1,22 @@
 "use client";
 
 import Link from "next/link";
+import { useSession } from "next-auth/react";
 
 import { api } from "~/trpc/react";
 
 /**
  * "or in the app" beside the footer's Google Form link. Draws nothing unless
- * `feedback.enabled` is known to be on: while loading, failed, signed out
- * (the query needs a session) or off, the footer reads exactly as before.
+ * `feedback.enabled` is known to be on: while loading, failed or off, the
+ * footer reads exactly as before. `feedback.enabled` is a protected procedure,
+ * so the query runs only for a signed-in user; a signed-out visitor sends no
+ * request.
  */
 export default function FeedbackFooterLink() {
+  const { status } = useSession();
   const enabled =
     api.feedback.enabled.useQuery(undefined, {
+      enabled: status === "authenticated",
       retry: false,
       staleTime: 60_000,
     }).data?.enabled === true;
