@@ -85,6 +85,11 @@ const CALLS: Array<
   ["get", (c) => c.get({ id: ID })],
   ["list", (c) => c.list({ ccaID: 7 })],
   ["submit", (c) => c.submit({ id: ID, version: 0 })],
+  ["approve", (c) => c.approve({ id: ID, version: 1 })],
+  ["return", (c) => c.return({ id: ID, version: 1, reason: "Fix the date" })],
+  ["finish", (c) => c.finish({ id: ID, version: 2 })],
+  ["directorHome", (c) => c.directorHome()],
+  ["directorQueue", (c) => c.directorQueue({})],
 ];
 
 describe("proposals.enabled gates every procedure but `enabled`", () => {
@@ -232,6 +237,102 @@ describe("error hygiene: no raw database message reaches the caller", () => {
     await expect(caller(db).create(NEW)).rejects.toMatchObject({
       code: "FORBIDDEN",
       message: "NOT_CCA_HEAD",
+    });
+  });
+});
+
+describe("the director's procedures", () => {
+  it("approve, return and finish refuse a missing proposal before any guard or write", async () => {
+    const { db, calls } = fakeDb("on");
+    for (const run of [
+      (c: ReturnType<typeof caller>) => c.approve({ id: ID, version: 1 }),
+      (c: ReturnType<typeof caller>) =>
+        c.return({ id: ID, version: 1, reason: "no" }),
+      (c: ReturnType<typeof caller>) => c.finish({ id: ID, version: 2 }),
+    ]) {
+      await expect(run(caller(db))).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    }
+    // The session says admin and jcrc; that grants nothing, and nothing wrote.
+    expect(calls.filter((c) => /create|update|$transaction/.test(c))).toEqual(
+      [],
+    );
+    expect(calls).not.toContain("userRole.findMany");
+  });
+
+  it("a return needs a reason and an approval note has a ceiling", async () => {
+    const { db } = fakeDb("on");
+    await expect(
+      caller(db).return({ id: ID, version: 1, reason: "   " }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      caller(db).approve({ id: ID, version: 1, note: "x".repeat(501) }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("cannot be told a CCA, a position, a status or a self-approved flag", async () => {
+    const { db } = fakeDb("on");
+    // Unknown keys are dropped; the proposal is not found, so nothing is asked.
+    await expect(
+      caller(db).approve({
+        id: ID,
+        version: 1,
+        ccaID: 7,
+        status: "cleared",
+        selfApproved: false,
+        approverID: "E9",
+      } as never),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(db.proposalStatusHistory.create).not.toHaveBeenCalled();
+  });
+
+  describe("directorEntry", () => {
+    it("is a plain false while proposals are off, and logs nothing", async () => {
+      const { db, calls } = fakeDb("off");
+      const spy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+      await expect(caller(db).directorEntry()).resolves.toEqual({
+        show: false,
+      });
+      expect(calls).toEqual(["systemFlag.proposals.enabled"]);
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
+    it("is a plain false for someone who directs nothing", async () => {
+      const { db } = fakeDb("on");
+      await expect(caller(db).directorEntry()).resolves.toEqual({
+        show: false,
+      });
+    });
+
+    it("is an error, not a false, when a guard read fails", async () => {
+      const { db } = fakeDb("on");
+      db.systemFlag.findUnique.mockImplementation((({
+        where,
+      }: {
+        where: { key: string };
+      }) =>
+        where.key === "proposals.enabled"
+          ? Promise.resolve({ key: where.key, value: "on" })
+          : Promise.reject(new Error("db down"))) as never);
+      const spy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+      await expect(caller(db).directorEntry()).rejects.toMatchObject({
+        code: "FORBIDDEN",
+      });
+      expect(String(spy.mock.calls[0]?.[0])).not.toContain("db down");
+      spy.mockRestore();
+    });
+
+    it("needs a signed-in user", async () => {
+      const { db } = fakeDb("on");
+      await expect(
+        caller(db, { signedIn: false }).directorEntry(),
+      ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
     });
   });
 });
