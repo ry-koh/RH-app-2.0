@@ -519,6 +519,7 @@ describe("schema: guarded collections are untouched", () => {
       "AuxAward",
       "AuxRecord",
       "AuxRecordAttendee",
+      "Notification",
     ]).toEqual(expect.arrayContaining(added));
   });
 });
