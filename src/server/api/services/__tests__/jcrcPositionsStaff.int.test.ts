@@ -745,19 +745,76 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         expect(await vacantOf(id)).toBe(false);
       });
 
-      it("a failed read is an error, not a quiet 'not vacant'", async () => {
-        await makePosition("Unreadable", { vets: true });
-        const broken = new Proxy(db, {
+      /** A database whose vacancy read of jcrcTerm (the only one with a select) fails. */
+      const breakVacancyRead = () =>
+        new Proxy(db, {
           get(target, prop, receiver) {
-            if (prop === "userRole") {
-              return { findMany: () => Promise.reject(new Error("down")) };
+            if (prop === "jcrcTerm") {
+              return new Proxy(target.jcrcTerm, {
+                get(model, method, r) {
+                  if (method === "findMany") {
+                    return (args?: { select?: unknown }) =>
+                      args?.select
+                        ? Promise.reject(new Error("down"))
+                        : model.findMany(args as never);
+                  }
+                  return Reflect.get(model, method, r) as unknown;
+                },
+              });
             }
             return Reflect.get(target, prop, receiver) as unknown;
           },
         });
+
+      it("a failed vacancy read shows 'unknown' (null) and still lists, on both doors", async () => {
+        const held = await flagged();
+        const plain = await unflagged();
+        const broken = breakVacancyRead();
+        const { positions } = await caller(
+          U.rf,
+          RF,
+          broken,
+        ).jcrcPositionsStaff.list();
+        expect(positions.find((p) => p.id === held)?.vacant).toBeNull();
+        const rows = await caller(U.admin, ADMIN, broken).jcrcPositions.list();
+        expect(rows.find((p) => p.id === held)?.vacant).toBeNull();
+        // An unflagged position is not affected: it has nothing to be vacant of.
+        expect(rows.find((p) => p.id === plain)?.vacant).toBe(false);
+        // The guard itself stays strict.
         await expect(
-          caller(U.rf, RF, broken).jcrcPositionsStaff.list(),
+          guard.isPositionVacant(broken, held),
         ).rejects.toBeDefined();
+      });
+
+      it("the Positions list marks vacancy: no holder, ended rows, no jcrc, and a live holder", async () => {
+        const none = await makePosition("None", { vets: true });
+        const ended = await makePosition("Ended", {
+          social: true,
+          holders: [{ userID: U.holder, endsAt: new Date(Date.now() - 1000) }],
+        });
+        const noJcrc = await makePosition("NoJcrc", {
+          vets: true,
+          holders: [{ userID: U.noJcrc }],
+        });
+        const live = await makePosition("Live", {
+          vets: true,
+          holders: [{ userID: U.holder }],
+        });
+        const open = await makePosition("Open", {
+          holders: [{ userID: U.plain }],
+        });
+        const rows = await positionsApi(U.admin, ADMIN).list();
+        const vacant = (id: string) => rows.find((p) => p.id === id)?.vacant;
+        expect(vacant(none)).toBe(true);
+        expect(vacant(ended)).toBe(true);
+        expect(vacant(noJcrc)).toBe(true);
+        expect(vacant(live)).toBe(false);
+        expect(vacant(open)).toBe(false);
+        // A plain JCRC member sees the same, and "mine" no longer carries it.
+        const member = await caller(U.plain, JCRC).jcrcPositions.list();
+        expect(member.find((p) => p.id === none)?.vacant).toBe(true);
+        const mine = await caller(U.holder, JCRC).jcrcPositions.mine();
+        expect(mine.positions.every((p) => !("vacant" in p))).toBe(true);
       });
     });
   },

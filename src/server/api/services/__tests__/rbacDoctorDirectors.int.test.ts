@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -10,9 +11,9 @@ import { isLocalDevDatabase } from "../transcript/__tests__/localDbGate";
  * reads what it prints, and checks that it changed nothing.
  *
  * The local database may hold other rows, so each assertion looks for this
- * test's own rows (users E99907xx, positions "TEST ...") in the output, and
- * the tests that need an otherwise empty director setup say so and stand down
- * when the database has other flagged positions.
+ * test's own rows (users E99907xx, positions "TEST ...") in the output. Flags
+ * on other positions are switched off for the run and restored afterwards, so
+ * no test stands down silently.
  */
 
 const SCRIPT = join(process.cwd(), "scripts", "remediation", "rbac-doctor.mjs");
@@ -44,12 +45,20 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       });
       return { out: `${r.stdout}\n${r.stderr}`, status: r.status };
     };
-    const counts = async () => {
-      const out: Record<string, number> = {};
+    /** A hash of every document in every collection the doctor reads. */
+    const fingerprint = async () => {
+      const out: Record<string, string> = {};
       for (const name of WATCHED) {
-        out[name] = await (
-          db[name] as unknown as { count: () => Promise<number> }
-        ).count();
+        const rows = await (
+          db[name] as unknown as {
+            findMany: () => Promise<unknown[]>;
+          }
+        ).findMany();
+        const canonical = rows
+          .map((row) => JSON.stringify(row))
+          .sort()
+          .join("|");
+        out[name] = createHash("sha256").update(canonical).digest("hex");
       }
       return out;
     };
@@ -105,14 +114,43 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           updatedBy: "test",
         },
       });
-    /** True when the database holds flagged positions that are not this test's. */
-    const hasOtherFlagged = async () =>
-      (await db.jcrcPosition.count({
+    /**
+     * The local database may hold flagged positions of its own. Those would
+     * change what the doctor prints, so setup switches their flags off and
+     * teardown puts them back exactly as they were.
+     */
+    let stashed: { id: string; vets: boolean; social: boolean }[] = [];
+    const stashOtherFlags = async () => {
+      const others = await db.jcrcPosition.findMany({
         where: {
           OR: [{ vetsProposals: true }, { handlesDisposables: true }],
           NOT: { name: { startsWith: "TEST " } },
         },
-      })) > 0;
+      });
+      stashed = [
+        ...stashed,
+        ...others.map((p) => ({
+          id: p.id,
+          vets: p.vetsProposals === true,
+          social: p.handlesDisposables === true,
+        })),
+      ];
+      for (const p of others) {
+        await db.jcrcPosition.update({
+          where: { id: p.id },
+          data: { vetsProposals: false, handlesDisposables: false },
+        });
+      }
+    };
+    const restoreOtherFlags = async () => {
+      for (const p of stashed) {
+        await db.jcrcPosition.updateMany({
+          where: { id: p.id },
+          data: { vetsProposals: p.vets, handlesDisposables: p.social },
+        });
+      }
+      stashed = [];
+    };
 
     beforeAll(async () => {
       ({ db } = await import("~/server/db"));
@@ -123,10 +161,12 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
     beforeEach(async () => {
       await clean();
       await setDirectors(null);
+      await stashOtherFlags();
     });
     afterAll(async () => {
       if (db) {
         await clean();
+        await restoreOtherFlags();
         await setDirectors(originalFlag);
         await db.$disconnect();
       }
@@ -183,8 +223,6 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
     });
 
     it("reports the disposables position as missing, then vacant, then fine", async () => {
-      // Only meaningful when the local database has no flagged positions of its own.
-      if (await hasOtherFlagged()) return;
       const none = run("--directors");
       expect(none.out).toContain("no position is flagged");
       const p = await position("Social", { social: true });
@@ -202,7 +240,6 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
     });
 
     it("shows every check at zero when the setup is complete", async () => {
-      if (await hasOtherFlagged()) return;
       const ccas = await db.cCA.findMany({ select: { ccaID: true } });
       const p = await position("All", { vets: true, social: true });
       for (const c of ccas) {
@@ -225,14 +262,14 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       expect(zero("holders of flagged positions without jcrc")).toBe(true);
     });
 
-    it("writes nothing: every collection it reads has the same row count after", async () => {
+    it("writes nothing: every document in every collection it reads is unchanged after", async () => {
       const p = await position("Counted", { vets: true, social: true });
       await role(U.bad, ["resident"]);
       await hold(p.id, U.bad);
-      const before = await counts();
+      const before = await fingerprint();
       run("--directors");
       run();
-      expect(await counts()).toEqual(before);
+      expect(await fingerprint()).toEqual(before);
     });
   },
 );

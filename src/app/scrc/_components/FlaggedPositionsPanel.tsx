@@ -128,7 +128,12 @@ function PositionRow({ row, ccas }: { row: Row; ccas: Listing["ccas"] }) {
             {power}
           </span>
         ))}
-        {row.vacant && (
+        {row.vacant === null && (
+          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">
+            Vacancy unknown
+          </span>
+        )}
+        {row.vacant === true && (
           <span
             role="status"
             className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900"

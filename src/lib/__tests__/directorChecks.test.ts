@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { JCRC_ROLE, normalizeStoredRoles } from "~/server/api/services/roles";
 
 // The doctor's pure rules, imported without running the script (no database).
 const lib = pathToFileURL(
@@ -106,6 +107,32 @@ describe("liveJcrcSet: who holds jcrc right now", () => {
     );
     expect([...set].sort()).toEqual(["A", "D", "E"]);
   });
+});
+
+describe("liveJcrcSet reads stored roles the way the guard does", () => {
+  // The guard normalises with normalizeStoredRoles (TypeScript, so a .mjs
+  // script cannot import it). This keeps the doctor's copy in step with it.
+  const stored: { roles?: string[]; role?: string }[] = [
+    { roles: ["jcrc"] },
+    { roles: ["resident", "jcrc"] },
+    { roles: ["JCRC"] },
+    { roles: [" jcrc"] },
+    { roles: ["jcrc_old"] },
+    { roles: [], role: "jcrc" },
+    { roles: [], role: "resident" },
+    { roles: ["scrc"] },
+    { roles: [] },
+    {},
+  ];
+  it.each(stored.map((row, i) => [i, row] as const))(
+    "agrees for stored row %i",
+    (i, row) => {
+      const raw = row.roles?.length ? row.roles : row.role ? [row.role] : [];
+      const guard = normalizeStoredRoles(raw).includes(JCRC_ROLE);
+      const doctor = liveJcrcSet([{ userID: "U", ...row }], [], NOW).has("U");
+      expect(doctor).toBe(guard);
+    },
+  );
 });
 
 describe("a passing state", () => {

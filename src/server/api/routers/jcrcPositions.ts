@@ -18,10 +18,7 @@ import {
   setStepOut,
   sweepEndedJcrcTerms,
 } from "~/server/api/services/jcrcHandover";
-import {
-  isDirectorsEnabled,
-  isPositionVacant,
-} from "~/server/api/services/directorGuard";
+import { isDirectorsEnabled } from "~/server/api/services/directorGuard";
 import {
   addPositionHolder,
   deletePosition,
@@ -34,7 +31,6 @@ import {
   POSITION_AUDIT,
   auditFlaggedChange,
   describeSnapshot,
-  isFlaggedPosition,
   nextUpdatedAt,
   positionTransaction,
   sameMembers,
@@ -144,27 +140,12 @@ export const jcrcPositionsRouter = createTRPCRouter({
         handlesDisposables: true,
       },
     });
-    // The vacancy mark, computed on read by the guard's own check. Only a
-    // position that grants powers can be vacant of them; a failed read rejects
-    // rather than showing "not vacant".
-    const vacantIDs = new Set(
-      (
-        await Promise.all(
-          positions
-            .filter(isFlaggedPosition)
-            .map(async (p) =>
-              (await isPositionVacant(ctx.db, p.id, now)) ? p.id : null,
-            ),
-        )
-      ).filter((id): id is string => id !== null),
-    );
     return {
       scope,
       positions: positions.map((p) => ({
         id: p.id,
         name: p.name,
         endsAt: held.find((h) => h.positionID === p.id)?.endsAt ?? null,
-        vacant: vacantIDs.has(p.id),
       })),
       termEndsAt: term?.endsAt ?? null,
     };

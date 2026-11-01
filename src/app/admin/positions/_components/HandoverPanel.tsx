@@ -34,15 +34,6 @@ const parseIDs = (raw: string) =>
     ),
   ] as string[];
 
-/** Shown on a position that gives powers but has no current qualifying holder. */
-function VacantMark() {
-  return (
-    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900">
-      No current holder with JCRC
-    </span>
-  );
-}
-
 /**
  * JCRC self-handover. Successors get `jcrc` and the positions at once; the
  * caller keeps theirs until the step-out date, then loses the positions and,
@@ -155,20 +146,6 @@ export default function HandoverPanel({ mine }: { mine: Mine }) {
         </div>
       )}
 
-      {mine.positions.some((p) => p.vacant) && (
-        <p
-          role="status"
-          className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
-        >
-          {mine.positions
-            .filter((p) => p.vacant)
-            .map((p) => p.name)
-            .join(", ")}{" "}
-          has no current holder who is on the JCRC, so its powers are off until
-          one is added.
-        </p>
-      )}
-
       {handable.length === 0 ? (
         <p className="mt-4 text-sm text-gray-500">
           {stepping.length > 0
@@ -201,7 +178,6 @@ export default function HandoverPanel({ mine }: { mine: Mine }) {
                   >
                     {p.name}
                   </label>
-                  {p.vacant && <VacantMark />}
                 </li>
               ))}
             </ul>

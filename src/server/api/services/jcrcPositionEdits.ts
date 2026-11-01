@@ -98,7 +98,10 @@ const POWER_LABELS = {
  * Every position (or only the flagged ones) with its CCAs and current holders.
  * `vacant` is computed here, on read, by the guard module's check, and is only
  * ever true for a flagged position: an unflagged one grants nothing, so it has
- * nothing to be vacant of. A failed read rejects (no silent "not vacant").
+ * nothing to be vacant of. This is a DISPLAY read, so it is forgiving: if the
+ * check fails for one position its `vacant` is null ("unknown") and only the
+ * error name is logged. The guard itself stays strict and still rejects.
+ * The checks run one after the other, each a handful of small reads.
  */
 export async function listPositions(
   db: PrismaClient,
@@ -125,13 +128,21 @@ export async function listPositions(
       select: { userID: true, displayName: true, email: true },
     }),
   ]);
-  const vacancy = new Map<string, boolean>();
+  const vacancy = new Map<string, boolean | null>();
   for (const p of positions) {
-    // One after the other: each is a handful of small reads.
-    vacancy.set(
-      p.id,
-      isFlaggedPosition(p) ? await isPositionVacant(db, p.id, now) : false,
-    );
+    if (!isFlaggedPosition(p)) {
+      vacancy.set(p.id, false);
+      continue;
+    }
+    try {
+      vacancy.set(p.id, await isPositionVacant(db, p.id, now));
+    } catch (error) {
+      console.error(
+        "[positions] vacancy read failed:",
+        error instanceof Error ? error.name : "UnknownError",
+      );
+      vacancy.set(p.id, null);
+    }
   }
   return positions.map((p) => ({
     id: p.id,
@@ -144,7 +155,8 @@ export async function listPositions(
     powers: (Object.keys(POWER_LABELS) as (keyof typeof POWER_LABELS)[])
       .filter((flag) => p[flag] === true)
       .map((flag) => POWER_LABELS[flag]),
-    vacant: vacancy.get(p.id) === true,
+    /** true: vacant. false: held (or not flagged). null: could not be read. */
+    vacant: vacancy.get(p.id) ?? null,
     ccas: links
       .filter((l) => l.positionID === p.id)
       .map((l) => ({
