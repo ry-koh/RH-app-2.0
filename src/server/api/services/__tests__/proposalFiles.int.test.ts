@@ -410,6 +410,36 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         expect((await rowOf(made.id)).posterUrl).toBe(url);
       });
 
+      it("the same address spelled with #1, ?x or other case is refused and its blob is not deleted", async () => {
+        const made = await makeDraft();
+        const url = posterOf(made.id);
+        const a = await as(U.head).update({
+          id: made.id,
+          version: made.version,
+          posterUrl: url,
+        });
+        for (const spelled of [
+          url + "#1",
+          url + "?x",
+          url.replace("/proposal/", "/Proposal/"),
+        ]) {
+          expect(
+            await errorOf(
+              as(U.head).update({
+                id: made.id,
+                version: a.version,
+                posterUrl: spelled,
+              }),
+            ),
+          ).toMatch(/^BAD_REQUEST/);
+        }
+        expect(blob.del).not.toHaveBeenCalled();
+        expect(await rowOf(made.id)).toMatchObject({
+          posterUrl: url,
+          version: a.version,
+        });
+      });
+
       it("removing the poster deletes its blob", async () => {
         const made = await makeDraft();
         const url = posterOf(made.id);

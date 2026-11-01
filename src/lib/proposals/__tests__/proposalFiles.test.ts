@@ -5,6 +5,7 @@ import { eventUploadPath } from "~/lib/schemas/event";
 import { proposalUpdateInput } from "~/lib/schemas/proposal";
 import {
   isOwnProposalPosterUrl,
+  normalizePosterUrl,
   normalizeDocLink,
   parseProposalUploadPath,
   proposalPosterPath,
@@ -201,5 +202,46 @@ describe("the update schema's file fields", () => {
         false,
       );
     }
+  });
+});
+
+describe("poster address spellings", () => {
+  it("refuses a query string or a fragment, even an empty one", () => {
+    for (const tail of ["#1", "?x", "?x=1", "#", "?"]) {
+      expect(isOwnProposalPosterUrl(poster(A) + tail, A)).toBe(false);
+      expect(normalizePosterUrl(poster(A) + tail, A)).toBeNull();
+    }
+  });
+
+  it("is case-sensitive about the prefix, as blob keys are", () => {
+    const upperId = `https://${CCA_BLOB_HOST}/proposal/${A.toUpperCase()}/poster-a.webp`;
+    const upperDir = `https://${CCA_BLOB_HOST}/Proposal/${A}/poster-a.webp`;
+    const upperName = `https://${CCA_BLOB_HOST}/proposal/${A}/POSTER-a.webp`;
+    for (const u of [upperId, upperDir, upperName]) {
+      expect(isOwnProposalPosterUrl(u, A)).toBe(false);
+    }
+    expect(
+      parseProposalUploadPath(`proposal/${A.toUpperCase()}/poster`),
+    ).toBeNull();
+  });
+
+  it("returns origin plus pathname, the same for the same blob", () => {
+    expect(normalizePosterUrl(poster(A), A)).toBe(poster(A));
+  });
+
+  it("the update schema refuses #1 and ?x on the current address", () => {
+    for (const tail of ["#1", "?x"]) {
+      expect(
+        proposalUpdateInput.safeParse({
+          id: A,
+          version: 0,
+          posterUrl: poster(A) + tail,
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      proposalUpdateInput.parse({ id: A, version: 0, posterUrl: poster(A) })
+        .posterUrl,
+    ).toBe(poster(A));
   });
 });

@@ -34,37 +34,47 @@ export function proposalPosterPath(proposalID: string): string {
 export function parseProposalUploadPath(
   pathname: string,
 ): { proposalID: string } | null {
-  const m = /^proposal\/([a-f\d]{24})\/poster$/i.exec(pathname);
+  const m = /^proposal\/([a-f\d]{24})\/poster$/.exec(pathname);
   return m ? { proposalID: m[1]! } : null;
 }
 
 /**
- * Is this address one of OUR poster blobs for THIS proposal? The load-bearing
- * check, since the browser sends whatever address it got back. Requires https,
- * no credentials or port, the store's exact host, and a path of exactly
- * `/proposal/<this id>/poster` plus Vercel's random suffix. Another proposal's
- * poster, an Event image and a CCA image all fail.
+ * The stored form of a poster address, or null if it is not one of OUR poster
+ * blobs for THIS proposal. The load-bearing check, since the browser sends
+ * whatever address it got back. Requires https, no credentials, port, query
+ * string or fragment, the store's exact host, and a path that is, CASE-
+ * SENSITIVELY (blob keys are), `/proposal/<this id>/poster` plus Vercel's
+ * random suffix. Another proposal's poster, an Event image and a CCA image all
+ * fail. The result is `origin + pathname`, so two spellings of one blob can
+ * never be stored, or compared, as different addresses.
  */
-export function isOwnProposalPosterUrl(
+export function normalizePosterUrl(
   url: string,
   proposalID: string,
-): boolean {
-  if (!PROPOSAL_ID.test(proposalID)) return false;
+): string | null {
+  if (!PROPOSAL_ID.test(proposalID)) return null;
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    return false;
+    return null;
   }
-  if (parsed.protocol !== "https:") return false;
-  if (parsed.host !== PROPOSAL_BLOB_HOST) return false;
-  if (parsed.username !== "" || parsed.password !== "") return false;
+  if (parsed.protocol !== "https:") return null;
+  if (parsed.host !== PROPOSAL_BLOB_HOST) return null;
+  if (parsed.username !== "" || parsed.password !== "") return null;
+  if (parsed.search !== "" || parsed.hash !== "") return null;
+  if (url.includes("?") || url.includes("#")) return null;
   const prefix = `/${proposalPosterPath(proposalID.toLowerCase())}`;
-  const path = parsed.pathname.toLowerCase();
-  return (
-    path.startsWith(prefix) &&
-    /^[-\w.]*$/.test(parsed.pathname.slice(prefix.length))
-  );
+  if (!parsed.pathname.startsWith(prefix)) return null;
+  if (!/^[-\w.]*$/.test(parsed.pathname.slice(prefix.length))) return null;
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
+export function isOwnProposalPosterUrl(
+  url: string,
+  proposalID: string,
+): boolean {
+  return normalizePosterUrl(url, proposalID) !== null;
 }
 
 /**

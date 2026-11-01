@@ -23,6 +23,7 @@ import {
 } from "~/lib/schemas/proposal";
 import { formatDateTime } from "~/app/events/_lib/format";
 import {
+  isOwnProposalPosterUrl,
   normalizeDocLink,
   PROPOSAL_DOC_LINK_MAX,
 } from "~/lib/schemas/proposalFiles";
@@ -186,6 +187,10 @@ export default function ProposalEditor({
   const linkInvalid = docLinkIsInvalid(form);
   // A stored link is checked again on the way out; one that fails is not shown.
   const shownLink = normalizeDocLink(loaded?.docLink ?? "");
+  const shownPoster =
+    loaded?.posterUrl && isOwnProposalPosterUrl(loaded.posterUrl, loaded.id)
+      ? loaded.posterUrl
+      : null;
 
   return (
     <div className="space-y-5">
@@ -382,16 +387,16 @@ export default function ProposalEditor({
             </div>
           </>
         ) : (
-          (loaded?.posterUrl || shownLink) && (
+          (shownPoster || shownLink) && (
             <div className="space-y-3">
-              {loaded?.posterUrl && (
+              {shownPoster && (
                 <div>
                   <p className="mb-1 text-sm font-medium text-gray-700">
                     Poster
                   </p>
                   <div className="relative h-64 w-full max-w-md overflow-hidden rounded-md border border-gray-200 bg-gray-50">
                     <Image
-                      src={loaded.posterUrl}
+                      src={shownPoster}
                       alt="Poster"
                       fill
                       className="object-contain"

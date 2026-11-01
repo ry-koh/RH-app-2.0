@@ -6,6 +6,7 @@ import { upload } from "@vercel/blob/client";
 
 import { Button } from "~/components/ui/button";
 import {
+  isOwnProposalPosterUrl,
   PROPOSAL_POSTER_MAX_BYTES,
   proposalPosterPath,
 } from "~/lib/schemas/proposalFiles";
@@ -77,7 +78,7 @@ export default function ProposalPosterField({
         </p>
       ) : (
         <>
-          {value && (
+          {value && proposalID && isOwnProposalPosterUrl(value, proposalID) && (
             <div className="relative h-40 w-64 overflow-hidden rounded-md border border-gray-200 bg-gray-50">
               <Image
                 src={value}

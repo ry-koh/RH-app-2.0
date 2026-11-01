@@ -1,10 +1,7 @@
 import { z } from "zod";
 
 import { PROPOSAL_CATEGORIES } from "~/lib/proposals/categories";
-import {
-  docLinkField,
-  isOwnProposalPosterUrl,
-} from "~/lib/schemas/proposalFiles";
+import { docLinkField, normalizePosterUrl } from "~/lib/schemas/proposalFiles";
 
 /**
  * Shared proposal validation. Under `src/lib/` and server-import-free so the
@@ -88,7 +85,7 @@ export const proposalUpdateInput = z
   .superRefine((v, ctx) => {
     if (
       typeof v.posterUrl === "string" &&
-      !isOwnProposalPosterUrl(v.posterUrl, v.id)
+      normalizePosterUrl(v.posterUrl, v.id) === null
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -96,7 +93,15 @@ export const proposalUpdateInput = z
         message: "That poster does not belong to this proposal",
       });
     }
-  });
+  })
+  // Store the canonical spelling, so the replace check compares like with like.
+  .transform((v) => ({
+    ...v,
+    posterUrl:
+      typeof v.posterUrl === "string"
+        ? (normalizePosterUrl(v.posterUrl, v.id) ?? v.posterUrl)
+        : v.posterUrl,
+  }));
 
 /** Submit names the version it validated; see Proposal.version. */
 export const proposalSubmitInput = z.object({
