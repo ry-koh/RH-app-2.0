@@ -18,16 +18,33 @@ import {
   setStepOut,
   sweepEndedJcrcTerms,
 } from "~/server/api/services/jcrcHandover";
+import { isDirectorsEnabled } from "~/server/api/services/directorGuard";
+import {
+  POSITION_AUDIT,
+  assertMayEditFlaggedPosition,
+  auditFlaggedChange,
+  describeSnapshot,
+  isFlaggedPosition,
+  sameMembers,
+  snapshotPosition,
+} from "~/server/api/services/jcrcPositionLock";
 
 /**
  * JCRC positions: CRUD, holders, the caller's own view scope and the
  * self-handover.
  *
- * VIEWS ONLY. Any JCRC member or admin may create, edit and delete any
- * position, set its CCAs and its holders, because a position grants nothing:
- * it only sets the default "My positions" filter on JCRC lists. The one write
- * here that touches a ROLE is `handOver`, and that is limited to positions the
- * caller holds (services/jcrcHandover.ts).
+ * VIEWS ONLY, EXCEPT FOR A FLAGGED POSITION. Any JCRC member or admin may
+ * create, edit and delete a position with neither flag, set its CCAs and its
+ * holders, with no audit row: it only sets the default "My positions" filter
+ * on JCRC lists. A position flagged `vetsProposals` or `handlesDisposables` is
+ * a permission (services/directorGuard.ts), so it is LOCKED: changing its
+ * holders or CCAs, renaming it and deleting it need an admin (RFs and Hall
+ * Office edit through the staff panel, with the same check), and each change
+ * writes an audit row. The lock reads the flag from the stored row at each
+ * call and stays on when `directors.enabled` is off. Only an admin sets or
+ * clears a flag, and self-assignment to a flagged position is refused for
+ * everyone. The one holder change left to a holder is `handOver`, limited to
+ * positions the caller holds (services/jcrcHandover.ts); it is not locked.
  *
  * Every procedure re-reads roles LIVE (I-5): roleManagerProcedure admits on the
  * session, and a member whose term ended a minute ago must not keep editing.
@@ -102,6 +119,8 @@ export const jcrcPositionsRouter = createTRPCRouter({
       name: p.name,
       overseesAll: p.overseesAll,
       order: p.order,
+      vetsProposals: p.vetsProposals === true,
+      handlesDisposables: p.handlesDisposables === true,
       ccas: links
         .filter((l) => l.positionID === p.id)
         .map((l) => ({
@@ -173,6 +192,98 @@ export const jcrcPositionsRouter = createTRPCRouter({
       .sort((a, b) => a.name.localeCompare(b.name));
   }),
 
+  /**
+   * What the screen shows: whether `directors.enabled` is on (fail closed),
+   * whether the caller is an admin (read live), and so whether the flag
+   * controls show. The lock does not depend on the switch.
+   */
+  directorsStatus: roleManagerProcedure.query(async ({ ctx }) => {
+    const roles = await assertManager(ctx.db, ctx.session.user.userID);
+    const enabled = await isDirectorsEnabled(ctx.db);
+    const isAdmin = roles.includes(ADMIN_ROLE);
+    return { enabled, isAdmin, canSetFlags: enabled && isAdmin };
+  }),
+
+  /**
+   * Set or clear one director flag. ADMIN ONLY, and only while
+   * `directors.enabled` is on.
+   *
+   * The admin confirms the position's holders and CCAs on screen first: the
+   * screen sends what it showed, and a change since then (CONFIRMATION_STALE)
+   * writes nothing, so the audit row lists what the admin actually confirmed.
+   * Setting is refused while any current holder's row was self-assigned
+   * (`assignedBy` equals `userID`): a row made before the flag must not carry
+   * power nobody approved. Clearing only removes power, so it is not blocked
+   * by that.
+   */
+  setFlag: roleManagerProcedure
+    .input(
+      z.object({
+        id: objectIDSchema,
+        flag: z.enum(["vetsProposals", "handlesDisposables"]),
+        value: z.boolean(),
+        seen: z.object({
+          holderIDs: z.array(userIDSchema).max(200),
+          ccaIDs: z.array(z.number().int().nonnegative()).max(200),
+        }),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const actor = ctx.session.user.userID;
+      const actorRoles = await assertManager(ctx.db, actor);
+      if (!actorRoles.includes(ADMIN_ROLE)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "ADMIN_REQUIRED" });
+      }
+      if (!(await isDirectorsEnabled(ctx.db))) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "DIRECTORS_DISABLED",
+        });
+      }
+      const stored = await assertPositionExists(ctx.db, input.id);
+      const snapshot = await snapshotPosition(ctx.db, input.id);
+      if (
+        !sameMembers(
+          snapshot.holders.map((h) => h.userID),
+          input.seen.holderIDs,
+        ) ||
+        !sameMembers(snapshot.ccaIDs, input.seen.ccaIDs)
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "CONFIRMATION_STALE",
+        });
+      }
+      if (
+        input.value &&
+        snapshot.holders.some((h) => h.assignedBy === h.userID)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "SELF_ASSIGNED_HOLDER",
+        });
+      }
+      const wasOn = stored[input.flag] === true;
+      if (wasOn === input.value) return { id: input.id, changed: false };
+      await ctx.db.jcrcPosition.update({
+        where: { id: input.id },
+        data: {
+          ...(input.flag === "vetsProposals"
+            ? { vetsProposals: input.value }
+            : { handlesDisposables: input.value }),
+          updatedAt: new Date(),
+        },
+      });
+      await auditFlaggedChange(ctx.db, {
+        actorUserID: actor,
+        actorRoles,
+        action: input.value ? POSITION_AUDIT.flagSet : POSITION_AUDIT.flagClear,
+        position: stored,
+        detail: `${input.flag} ${input.value ? "set" : "cleared"}; ${describeSnapshot(snapshot)}`,
+      });
+      return { id: input.id, changed: true };
+    }),
+
   create: roleManagerProcedure
     .input(
       z.object({
@@ -207,8 +318,14 @@ export const jcrcPositionsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertManager(ctx.db, ctx.session.user.userID);
-      await assertPositionExists(ctx.db, input.id);
+      const actor = ctx.session.user.userID;
+      const actorRoles = await assertManager(ctx.db, actor);
+      const stored = await assertPositionExists(ctx.db, input.id);
+      // Only a RENAME is locked: overseesAll grants no approval power and the
+      // order is cosmetic, so neither is a change to what the position grants.
+      const renaming = input.name !== undefined && input.name !== stored.name;
+      const locked = isFlaggedPosition(stored) && renaming;
+      if (locked) assertMayEditFlaggedPosition(actorRoles);
       const { id, ...data } = input;
       try {
         await ctx.db.jcrcPosition.update({
@@ -221,6 +338,15 @@ export const jcrcPositionsRouter = createTRPCRouter({
         }
         throw err;
       }
+      if (locked) {
+        await auditFlaggedChange(ctx.db, {
+          actorUserID: actor,
+          actorRoles,
+          action: POSITION_AUDIT.rename,
+          position: stored,
+          detail: `renamed to "${input.name}"`,
+        });
+      }
       return { id };
     }),
 
@@ -228,8 +354,15 @@ export const jcrcPositionsRouter = createTRPCRouter({
   delete: roleManagerProcedure
     .input(z.object({ id: objectIDSchema }))
     .mutation(async ({ ctx, input }) => {
-      await assertManager(ctx.db, ctx.session.user.userID);
-      await assertPositionExists(ctx.db, input.id);
+      const actor = ctx.session.user.userID;
+      const actorRoles = await assertManager(ctx.db, actor);
+      const stored = await assertPositionExists(ctx.db, input.id);
+      const locked = isFlaggedPosition(stored);
+      if (locked) assertMayEditFlaggedPosition(actorRoles);
+      // What the audit row records is read before the rows go.
+      const before = locked
+        ? await snapshotPosition(ctx.db, input.id)
+        : undefined;
       await ctx.db.jcrcPositionCca.deleteMany({
         where: { positionID: input.id },
       });
@@ -237,6 +370,15 @@ export const jcrcPositionsRouter = createTRPCRouter({
         where: { positionID: input.id },
       });
       await ctx.db.jcrcPosition.delete({ where: { id: input.id } });
+      if (before) {
+        await auditFlaggedChange(ctx.db, {
+          actorUserID: actor,
+          actorRoles,
+          action: POSITION_AUDIT.delete,
+          position: stored,
+          detail: `deleted; ${describeSnapshot(before)}`,
+        });
+      }
       return { id: input.id };
     }),
 
@@ -252,8 +394,10 @@ export const jcrcPositionsRouter = createTRPCRouter({
     )
     .mutation(async ({ ctx, input }) => {
       const userID = ctx.session.user.userID;
-      await assertManager(ctx.db, userID);
-      await assertPositionExists(ctx.db, input.id);
+      const actorRoles = await assertManager(ctx.db, userID);
+      const stored = await assertPositionExists(ctx.db, input.id);
+      const locked = isFlaggedPosition(stored);
+      if (locked) assertMayEditFlaggedPosition(actorRoles);
       const wanted = [...new Set(input.ccaIDs)];
       const known = await ctx.db.cCA.findMany({
         where: { ccaID: { in: wanted } },
@@ -281,6 +425,15 @@ export const jcrcPositionsRouter = createTRPCRouter({
           update: {},
         });
       }
+      if (locked && (toAdd.length > 0 || toRemove.length > 0)) {
+        await auditFlaggedChange(ctx.db, {
+          actorUserID: userID,
+          actorRoles,
+          action: POSITION_AUDIT.setCcas,
+          position: stored,
+          detail: `ccas added: ${toAdd.join(", ") || "none"}; removed: ${toRemove.join(", ") || "none"}`,
+        });
+      }
       return { added: toAdd.length, removed: toRemove.length };
     }),
 
@@ -288,19 +441,38 @@ export const jcrcPositionsRouter = createTRPCRouter({
    * Adds a holder. The person must already hold `jcrc`: appointing JCRC is the
    * RFs' and Hall Office's job (or the handover's), not this list's.
    *
-   * NO SELF-ASSIGNMENT, except by an admin. A held position is what lets a
-   * member hand `jcrc` on (services/jcrcHandover.ts), so a member must not be
-   * able to give themselves one.
+   * NO SELF-ASSIGNMENT, except by an admin on a position with no flag. A held
+   * position is what lets a member hand `jcrc` on (services/jcrcHandover.ts),
+   * so a member must not be able to give themselves one. On a flagged position
+   * nobody may, admins included, because the holder is a director.
    */
   addHolder: roleManagerProcedure
     .input(z.object({ id: objectIDSchema, userID: userIDSchema }))
     .mutation(async ({ ctx, input }) => {
       const actor = ctx.session.user.userID;
       const actorRoles = await assertManager(ctx.db, actor);
-      if (input.userID === actor && !actorRoles.includes(ADMIN_ROLE)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "SELF_ASSIGN" });
+      const stored = await ctx.db.jcrcPosition.findUnique({
+        where: { id: input.id },
+      });
+      const locked = stored !== null && isFlaggedPosition(stored);
+      if (locked) assertMayEditFlaggedPosition(actorRoles);
+      if (input.userID === actor) {
+        if (locked) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "SELF_ASSIGN_FLAGGED",
+          });
+        }
+        if (!actorRoles.includes(ADMIN_ROLE)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "SELF_ASSIGN" });
+        }
       }
-      await assertPositionExists(ctx.db, input.id);
+      if (!stored) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "POSITION_NOT_FOUND",
+        });
+      }
       const targetRoles = await getUserRoles(ctx.db, input.userID);
       if (!targetRoles.includes(JCRC_ROLE)) {
         throw new TRPCError({
@@ -327,6 +499,16 @@ export const jcrcPositionsRouter = createTRPCRouter({
       });
       // An open position means no term end: drop any step-out left over.
       await ctx.db.jcrcTerm.deleteMany({ where: { userID: input.userID } });
+      if (locked) {
+        await auditFlaggedChange(ctx.db, {
+          actorUserID: actor,
+          actorRoles,
+          action: POSITION_AUDIT.addHolder,
+          position: stored,
+          targetUserID: input.userID,
+          detail: "holder added",
+        });
+      }
       return { id: input.id, userID: input.userID };
     }),
 
@@ -334,10 +516,28 @@ export const jcrcPositionsRouter = createTRPCRouter({
   removeHolder: roleManagerProcedure
     .input(z.object({ id: objectIDSchema, userID: userIDSchema }))
     .mutation(async ({ ctx, input }) => {
-      await assertManager(ctx.db, ctx.session.user.userID);
-      await ctx.db.jcrcPositionHolder.deleteMany({
+      const actor = ctx.session.user.userID;
+      const actorRoles = await assertManager(ctx.db, actor);
+      // A position that does not exist has nothing to lock; the delete below
+      // is a no-op for it, as before.
+      const stored = await ctx.db.jcrcPosition.findUnique({
+        where: { id: input.id },
+      });
+      const locked = stored !== null && isFlaggedPosition(stored);
+      if (locked) assertMayEditFlaggedPosition(actorRoles);
+      const { count } = await ctx.db.jcrcPositionHolder.deleteMany({
         where: { positionID: input.id, userID: input.userID },
       });
+      if (stored && locked && count > 0) {
+        await auditFlaggedChange(ctx.db, {
+          actorUserID: actor,
+          actorRoles,
+          action: POSITION_AUDIT.removeHolder,
+          position: stored,
+          targetUserID: input.userID,
+          detail: "holder removed",
+        });
+      }
       return { id: input.id, userID: input.userID };
     }),
 
