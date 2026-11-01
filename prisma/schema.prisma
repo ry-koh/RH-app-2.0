@@ -1556,6 +1556,33 @@ model AuxRecordAttendee {
 }
 
 // ---------------------------------------------------------------------------
+// IN-APP NOTIFICATIONS (socporthub merge, PR 1). One row per recipient, so
+// read state is per person. A recipient is a canonical userID; nothing here
+// is year-based, so there is deliberately NO `academicYear` field (the
+// retention registry matches on that exact name). The only writer is
+// services/notifications.ts `notify`. Rows expire by a TTL index on `expiresAt`
+// that Prisma cannot express: scripts/remediation/create-notification-indexes.mjs.
+// ---------------------------------------------------------------------------
+
+/// A notice for one person. Title and body are plain text, never HTML.
+model Notification {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  userID    String
+  kind      String
+  title     String
+  body      String?
+  /// An in-app path ("/events/12"), never an absolute URL.
+  href      String?
+  createdAt DateTime  @default(now())
+  readAt    DateTime?
+  /// When the TTL index removes the row (about 180 days after creation).
+  expiresAt DateTime
+
+  @@index([userID, createdAt], map: "notification_user_created")
+  @@index([userID, readAt], map: "notification_user_read")
+}
+
+// ---------------------------------------------------------------------------
 // TRANSCRIPT (docs/transcript/SPEC.md). Every model below is a NEW, UNVALIDATED
 // collection — the validator-guarded CCA / UserCCA / User silently reject new
 // fields (code 121), so nothing transcript-specific lives on them. All are keyed
