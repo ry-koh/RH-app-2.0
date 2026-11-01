@@ -107,6 +107,12 @@ export function describeProposalError(message: string | undefined): {
         .filter((s) => s !== ""),
     };
   }
+  if (m.startsWith("RATE_LIMITED")) {
+    return {
+      text: "You have made a lot of changes in the last hour. Wait a few minutes and try again.",
+      items: [],
+    };
+  }
   const text = (() => {
     switch (m) {
       case "PROPOSALS_DISABLED":

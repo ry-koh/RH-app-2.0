@@ -61,11 +61,29 @@ async function headsCca(
   return row !== null;
 }
 
+export const PROPOSAL_NOT_FOUND = "PROPOSAL_NOT_FOUND";
+
+/**
+ * How a denial is spelled. Paths that start from a proposal ID the caller
+ * sent pass `hideExistence`, so a missing ID and another CCA's ID are the same
+ * NOT_FOUND and the ID cannot be used to probe which proposals exist. Paths
+ * that start from a CCA ID (create, list) keep the FORBIDDEN, which says
+ * nothing about any proposal.
+ */
+export type DenialOptions = { hideExistence?: boolean };
+
+function denial(code: string, options?: DenialOptions): TRPCError {
+  return options?.hideExistence
+    ? new TRPCError({ code: "NOT_FOUND", message: PROPOSAL_NOT_FOUND })
+    : new TRPCError({ code: "FORBIDDEN", message: code });
+}
+
 /** Refuse unless this person heads this CCA now. */
 export async function assertCcaHead(
   db: ProposalAccessDb,
   userID: string,
   ccaID: number,
+  options?: DenialOptions,
 ): Promise<void> {
   let allowed: boolean;
   try {
@@ -73,9 +91,7 @@ export async function assertCcaHead(
   } catch (err) {
     return refuseOnFailure(err);
   }
-  if (!allowed) {
-    throw new TRPCError({ code: "FORBIDDEN", message: NOT_CCA_HEAD });
-  }
+  if (!allowed) throw denial(NOT_CCA_HEAD, options);
 }
 
 /**
@@ -86,6 +102,7 @@ export async function assertProposalReader(
   db: ProposalAccessDb,
   userID: string,
   ccaID: number,
+  options?: DenialOptions,
 ): Promise<ProposalViewer> {
   let viewer: ProposalViewer | null;
   try {
@@ -99,8 +116,6 @@ export async function assertProposalReader(
   } catch (err) {
     return refuseOnFailure(err);
   }
-  if (viewer === null) {
-    throw new TRPCError({ code: "FORBIDDEN", message: NOT_PROPOSAL_READER });
-  }
+  if (viewer === null) throw denial(NOT_PROPOSAL_READER, options);
   return viewer;
 }

@@ -191,3 +191,47 @@ describe("input a browser could send", () => {
     spy.mockRestore();
   });
 });
+
+describe("error hygiene: no raw database message reaches the caller", () => {
+  const RAW =
+    "Invalid `prisma.proposal.findUnique()` invocation: field secretCol";
+
+  it.each([
+    ["get", (c: ReturnType<typeof caller>) => c.get({ id: ID })],
+    [
+      "update",
+      (c: ReturnType<typeof caller>) =>
+        c.update({ id: ID, version: 0, title: "x" }),
+    ],
+    [
+      "submit",
+      (c: ReturnType<typeof caller>) => c.submit({ id: ID, version: 0 }),
+    ],
+  ])("%s turns an unexpected failure into a fixed message", async (_n, run) => {
+    const { db } = fakeDb("on");
+    db.proposal.findUnique.mockRejectedValueOnce(new Error(RAW));
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const error = await run(caller(db)).then(
+      () => null,
+      (e: unknown) => e as { code: string; message: string },
+    );
+
+    expect(error?.code).toBe("INTERNAL_SERVER_ERROR");
+    expect(error?.message).toBe("Something went wrong.");
+    expect(error?.message).not.toContain("secretCol");
+    // The operator still gets the detail.
+    expect(spy.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+      "secretCol",
+    );
+    spy.mockRestore();
+  });
+
+  it("deliberate refusals still pass through with their own message", async () => {
+    const { db } = fakeDb("on");
+    await expect(caller(db).create(NEW)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "NOT_CCA_HEAD",
+    });
+  });
+});

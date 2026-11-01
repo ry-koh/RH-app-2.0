@@ -29,9 +29,12 @@ type Input = {
   terms: { userID: string; endsAt: Date }[];
   now: Date;
 };
-const { evaluateDirectorChecks, liveJcrcSet, isGating } = (await import(
-  /* @vite-ignore */ lib
-)) as {
+const {
+  evaluateDirectorChecks,
+  liveJcrcSet,
+  isGating,
+  proposalsNeedDirectors,
+} = (await import(/* @vite-ignore */ lib)) as {
   evaluateDirectorChecks: (input: Input) => {
     flaggedPositions: number;
     checks: Check[];
@@ -40,6 +43,10 @@ const { evaluateDirectorChecks, liveJcrcSet, isGating } = (await import(
     check: Pick<Check, "always" | "blocks">,
     state: { flagArg: boolean; directorsOn: boolean; proposalsOn: boolean },
   ) => boolean;
+  proposalsNeedDirectors: (state: {
+    proposalsOn: boolean;
+    directorsOn: boolean;
+  }) => { label: string; offenders: string[]; note: string } | null;
   liveJcrcSet: (
     userRoles: Input["userRoles"],
     terms: Input["terms"],
@@ -423,5 +430,37 @@ describe('isGating: which switch turns a "not set up" line RED', () => {
     expect(
       isGating(noDirector(), { ...off, proposalsOn: undefined as never }),
     ).toBe(false);
+  });
+});
+
+describe("proposalsNeedDirectors: proposals on, directors off", () => {
+  it("is a RED line that names the switch to turn on", () => {
+    const line = proposalsNeedDirectors({
+      proposalsOn: true,
+      directorsOn: false,
+    });
+    expect(line).not.toBeNull();
+    expect(line?.offenders).toEqual(["turn on directors.enabled"]);
+    expect(line?.label).toContain("proposals.enabled is on");
+    expect(line?.label).toContain("directors.enabled is off");
+  });
+
+  it("says nothing when directors are on, or proposals are off", () => {
+    for (const state of [
+      { proposalsOn: true, directorsOn: true },
+      { proposalsOn: false, directorsOn: false },
+      { proposalsOn: false, directorsOn: true },
+    ]) {
+      expect(proposalsNeedDirectors(state)).toBeNull();
+    }
+  });
+
+  it("only an exact true counts as proposals on", () => {
+    expect(
+      proposalsNeedDirectors({
+        proposalsOn: undefined as never,
+        directorsOn: false,
+      }),
+    ).toBeNull();
   });
 });

@@ -152,3 +152,23 @@ export function isGating(check, { flagArg, directorsOn, proposalsOn }) {
   if (flagArg || directorsOn) return true;
   return check.blocks === "proposals" && proposalsOn === true;
 }
+
+/**
+ * `proposals.enabled` on with `directors.enabled` off: heads can submit, but
+ * the director guard fails closed while its own switch is off, so no director
+ * can ever act on what they submit and the "no director" line (which only
+ * looks at positions) can still be green. Returns the one line to show RED,
+ * naming the switch to turn on, or null when the pair is fine. This is about
+ * the stored switches, not the run's `--directors` argument.
+ *
+ * @param {{ proposalsOn: boolean, directorsOn: boolean }} state
+ * @returns {{ label: string, offenders: string[], note: string } | null}
+ */
+export function proposalsNeedDirectors({ proposalsOn, directorsOn }) {
+  if (proposalsOn !== true || directorsOn === true) return null;
+  return {
+    label: "proposals.enabled is on but directors.enabled is off",
+    offenders: ["turn on directors.enabled"],
+    note: "no director can act on a submitted proposal until it is on",
+  };
+}

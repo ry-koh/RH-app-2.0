@@ -60,7 +60,11 @@ import {
   findAll, countWhere, numify, E_FORMAT, ROLE_VOCAB, SENTINEL_FACILITY_ID, legacyCanonicalUserID,
   aggregateAll, isCommit, abort,
 } from "./lib/rbac.mjs";
-import { evaluateDirectorChecks, isGating } from "./lib/directorChecks.mjs";
+import {
+  evaluateDirectorChecks,
+  isGating,
+  proposalsNeedDirectors,
+} from "./lib/directorChecks.mjs";
 
 const db = new PrismaClient();
 const ALL_NAMES = process.argv.includes("--names");
@@ -353,6 +357,15 @@ async function directorSection() {
     console.log(
       "      proposals.enabled is on: the CCAs-with-no-director line is GATING",
     );
+  }
+  // The pair of stored switches, whatever --directors says: the guard reads
+  // directors.enabled itself. Read-only, like the rest of this section.
+  const mismatch = proposalsNeedDirectors({ proposalsOn, directorsOn });
+  if (mismatch) {
+    line(`  ${mismatch.label}`, 1, {
+      bad: mismatch.offenders,
+      note: mismatch.note,
+    });
   }
   for (const c of checks) {
     const wrong = c.offenders.length > 0;

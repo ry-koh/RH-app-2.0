@@ -258,6 +258,35 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       expect(run().out).toMatch(informational(noDirector));
     });
 
+    it("proposals.enabled on with directors.enabled off is RED and names the flag to turn on", async () => {
+      await position("Empty", { vets: true });
+      const mismatch = new RegExp(
+        "proposals.enabled is on but directors.enabled is off[.\\s]+1\\s+<- RED",
+      );
+
+      // Both off: nothing to say, with or without --directors.
+      expect(run().out).not.toMatch(mismatch);
+      expect(run("--directors").out).not.toMatch(mismatch);
+
+      // Proposals on, directors off: RED, and --directors does not hide it,
+      // because the director guard reads the stored switch.
+      await setProposals("on");
+      for (const args of [[], ["--directors"]] as string[][]) {
+        const r = run(...args);
+        expect(r.out).toMatch(mismatch);
+        expect(r.out).toContain("turn on directors.enabled");
+        expect(r.status).toBe(1);
+      }
+
+      // Directors on as well: the pair is fine, the line is gone.
+      await setDirectors("on");
+      expect(run().out).not.toMatch(mismatch);
+
+      // Directors on, proposals off: also fine.
+      await setProposals(null);
+      expect(run().out).not.toMatch(mismatch);
+    });
+
     it("reports the disposables position as missing, then vacant, then fine", async () => {
       const none = run("--directors");
       expect(none.out).toContain("no position is flagged");

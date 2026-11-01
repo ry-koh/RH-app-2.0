@@ -304,6 +304,32 @@ describe("proposal access never uses a forgiving read", () => {
     }
   });
 
+  it("every gated proposal procedure runs inside sanitizeErrors", () => {
+    const code = stripComments(read("src/server/api/routers/proposal.ts"));
+    // The one builder every procedure but `enabled` starts from.
+    expect(code).toMatch(
+      /const gated = identifiedProcedure\s*\.use\(sanitizeErrors\)\s*\.use\(/,
+    );
+    expect(code.match(/^ {2}\w+: gated/gm)).toHaveLength(5);
+    expect(code.match(/^ {2}\w+: protectedProcedure/gm)).toHaveLength(1);
+  });
+
+  it("create, update and submit each spend rate-limit budget after the access check", () => {
+    for (const [file, action] of [
+      ["drafts.ts", "create"],
+      ["drafts.ts", "update"],
+      ["submit.ts", "submit"],
+    ] as const) {
+      const code = stripComments(
+        read(`src/server/api/services/proposals/${file}`),
+      );
+      const head = code.indexOf("await assertCcaHead(");
+      const limit = code.indexOf(`assertWithinLimit("${action}"`);
+      expect(head, `${file} ${action}`).toBeGreaterThan(-1);
+      expect(limit, `${file} ${action}`).toBeGreaterThan(head);
+    }
+  });
+
   it("transition.ts rethrows everything but a write conflict", () => {
     const code = stripComments(read(TRANSITION));
     expect(code.match(/\bcatch\b/g)).toHaveLength(1);

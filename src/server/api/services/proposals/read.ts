@@ -61,7 +61,10 @@ export async function getProposal(
   if (!row) {
     throw new TRPCError({ code: "NOT_FOUND", message: PROPOSAL_NOT_FOUND });
   }
-  const viewer = await assertProposalReader(db, userID, row.ccaID);
+  // A non-reader gets the same NOT_FOUND as a missing id.
+  const viewer = await assertProposalReader(db, userID, row.ccaID, {
+    hideExistence: true,
+  });
   if (hiddenFromDirector(viewer, row.status)) {
     throw new TRPCError({ code: "NOT_FOUND", message: PROPOSAL_NOT_FOUND });
   }

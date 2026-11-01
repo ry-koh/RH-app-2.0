@@ -128,6 +128,12 @@ describe("describeProposalError", () => {
     );
   });
 
+  it("explains a rate limit without showing the seconds code", () => {
+    const shown = describeProposalError("RATE_LIMITED:312");
+    expect(shown.text).toMatch(/Wait a few minutes/);
+    expect(shown.text).not.toMatch(/RATE_LIMITED|312/);
+  });
+
   it("never shows an unknown message, such as a driver or validation dump", () => {
     const shown = describeProposalError('[{"code":"too_big","secret":"x"}]');
     expect(shown.text).toBe("Something went wrong. Try again shortly.");

@@ -11,6 +11,7 @@ import { currentDirectorIDs } from "~/server/api/services/directorGuard";
 import { notify } from "~/server/api/services/notifications";
 import { assertCcaHead } from "./access";
 import { PROPOSAL_NOT_FOUND } from "./drafts";
+import { assertWithinLimit } from "./limits";
 import { PROPOSAL_CONFLICT, transitionProposal } from "./transition";
 
 export const PROPOSAL_INCOMPLETE = "PROPOSAL_INCOMPLETE";
@@ -49,7 +50,9 @@ export async function submitProposal(
   if (!row) {
     throw new TRPCError({ code: "NOT_FOUND", message: PROPOSAL_NOT_FOUND });
   }
-  await assertCcaHead(db, userID, row.ccaID);
+  // A non-head gets the same NOT_FOUND as a missing id.
+  await assertCcaHead(db, userID, row.ccaID, { hideExistence: true });
+  await assertWithinLimit("submit", userID);
 
   if (
     !isProposalStatus(row.status) ||

@@ -6,10 +6,11 @@ import type {
   ProposalCreateInput,
   ProposalUpdateInput,
 } from "~/lib/schemas/proposal";
-import { assertCcaHead } from "./access";
+import { assertCcaHead, PROPOSAL_NOT_FOUND } from "./access";
+import { assertWithinLimit } from "./limits";
 import { PROPOSAL_CONFLICT } from "./transition";
 
-export const PROPOSAL_NOT_FOUND = "PROPOSAL_NOT_FOUND";
+export { PROPOSAL_NOT_FOUND };
 export const NOTHING_TO_UPDATE = "NOTHING_TO_UPDATE";
 export const END_NOT_AFTER_START = "END_NOT_AFTER_START";
 
@@ -26,6 +27,7 @@ export async function createProposal(
   input: ProposalCreateInput,
 ): Promise<{ id: string; version: number }> {
   await assertCcaHead(db, userID, input.ccaID);
+  await assertWithinLimit("create", userID);
   return db.proposal.create({
     data: {
       ccaID: input.ccaID,
@@ -61,7 +63,9 @@ export async function updateProposal(
   if (!row) {
     throw new TRPCError({ code: "NOT_FOUND", message: PROPOSAL_NOT_FOUND });
   }
-  await assertCcaHead(db, userID, row.ccaID);
+  // A non-head gets the same NOT_FOUND as a missing id.
+  await assertCcaHead(db, userID, row.ccaID, { hideExistence: true });
+  await assertWithinLimit("update", userID);
 
   const data = {
     ...(input.category !== undefined && { category: input.category }),

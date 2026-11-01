@@ -9,6 +9,7 @@ import {
   createTRPCRouter,
   identifiedProcedure,
   protectedProcedure,
+  sanitizeErrors,
 } from "~/server/api/trpc";
 import {
   createProposal,
@@ -33,17 +34,26 @@ import { submitProposal } from "~/server/api/services/proposals/submit";
  * the CCA id the browser sent, never from the session's roles:
  *  - create / update / submit: a head of that CCA only;
  *  - get / list: that CCA's heads and directors only.
- * An admin who is neither is refused. Status is never an input and never
+ * An admin who is neither is refused. Where the caller names a proposal id
+ * (get, update, submit) a missing id and another CCA's id give the same
+ * NOT_FOUND. create / update / submit also carry a per-person hourly ceiling
+ * (services/proposals/limits.ts). Status is never an input and never
  * written here: submit calls `transitionProposal`, the only status writer.
  *
  * There is no head "cancel" in this PR: the proposal's 4.1 and F06 give heads
  * "write and submit", and the table already carries the canceled status for
  * the PR that gives someone the power to use it.
  */
-const gated = identifiedProcedure.use(async ({ ctx, next }) => {
-  await assertProposalsEnabled(ctx.db);
-  return next();
-});
+const gated = identifiedProcedure
+  // Outermost, so a failure anywhere below (a Prisma error out of a service,
+  // the notices written during submit) reaches the caller as "Something went
+  // wrong." and the real message goes to the server log only. Deliberate
+  // refusals (FORBIDDEN, NOT_FOUND, CONFLICT, ...) pass through untouched.
+  .use(sanitizeErrors)
+  .use(async ({ ctx, next }) => {
+    await assertProposalsEnabled(ctx.db);
+    return next();
+  });
 
 export const proposalRouter = createTRPCRouter({
   /** The screens ask this. Never throws on off. */

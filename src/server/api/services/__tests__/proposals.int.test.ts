@@ -1,7 +1,15 @@
 import type { PrismaClient } from "@prisma/client";
 import type { createCaller as CreateCaller } from "~/server/api/root";
 import type * as TransitionModule from "../proposals/transition";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { isLocalDevDatabase } from "../transcript/__tests__/localDbGate";
 
 /**
@@ -94,7 +102,14 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       return "ok";
     };
 
+    /** The rate-limit counters these test users could have left behind. */
+    const limitKeys = () =>
+      (["create", "update", "submit"] as const).flatMap((action) =>
+        IDS.map((id) => `proposal.${action}:${id}`),
+      );
+
     const clean = async () => {
+      await db.rateLimit.deleteMany({ where: { key: { in: limitKeys() } } });
       const mine = await db.proposal.findMany({
         where: { OR: [{ ccaID: { in: CCAS } }, { createdBy: { in: IDS } }] },
         select: { id: true },
@@ -430,14 +445,38 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           errorOf(other.submit({ id: made.id, version: 0 })),
         ]);
 
+        // Calls that start from a CCA id say FORBIDDEN. Calls that start from
+        // a proposal id say the same NOT_FOUND as a missing id (see below).
         expect(answers).toEqual([
           "FORBIDDEN:NOT_CCA_HEAD",
-          "FORBIDDEN:NOT_CCA_HEAD",
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
           "FORBIDDEN:NOT_PROPOSAL_READER",
-          "FORBIDDEN:NOT_PROPOSAL_READER",
-          "FORBIDDEN:NOT_CCA_HEAD",
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
         ]);
         expect(await snapshot(made.id)).toEqual(before);
+      });
+
+      it("another CCA's proposal id and a missing id get the identical answer on get, update and submit", async () => {
+        const made = await makeDraft();
+        const other = as(U.headB);
+        const missing = "0123456789abcdef01234567";
+
+        const probe = (id: string) =>
+          Promise.all([
+            errorOf(other.get({ id })),
+            errorOf(other.update({ id, version: 0, title: "x" })),
+            errorOf(other.submit({ id, version: 0 })),
+          ]);
+
+        const theirs = await probe(made.id);
+        const gone = await probe(missing);
+        expect(theirs).toEqual(gone);
+        expect(theirs).toEqual([
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
+        ]);
       });
 
       it("a director of ANOTHER CCA is refused on every procedure", async () => {
@@ -455,10 +494,10 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
 
         expect(answers).toEqual([
           "FORBIDDEN:NOT_CCA_HEAD",
-          "FORBIDDEN:NOT_CCA_HEAD",
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
           "FORBIDDEN:NOT_PROPOSAL_READER",
-          "FORBIDDEN:NOT_PROPOSAL_READER",
-          "FORBIDDEN:NOT_CCA_HEAD",
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
         ]);
       });
 
@@ -481,7 +520,13 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           errorOf(caller.submit({ id: made.id, version: 1 })),
         ]);
 
-        for (const a of answers) expect(a).toMatch(/^FORBIDDEN:NOT_/);
+        expect(answers).toEqual([
+          "FORBIDDEN:NOT_CCA_HEAD",
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
+          "FORBIDDEN:NOT_PROPOSAL_READER",
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
+        ]);
       });
 
       it("a director may read a submitted proposal of their CCA but never write", async () => {
@@ -501,10 +546,10 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           await errorOf(
             director.update({ id: made.id, version: 1, title: "x" }),
           ),
-        ).toBe("FORBIDDEN:NOT_CCA_HEAD");
+        ).toBe("NOT_FOUND:PROPOSAL_NOT_FOUND");
         expect(
           await errorOf(director.submit({ id: made.id, version: 1 })),
-        ).toBe("FORBIDDEN:NOT_CCA_HEAD");
+        ).toBe("NOT_FOUND:PROPOSAL_NOT_FOUND");
       });
 
       it("a director does not see a draft, in get or in list", async () => {
@@ -527,6 +572,9 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         await setFlag("directors.enabled", "off");
 
         expect(await errorOf(as(U.dirA).get({ id: made.id }))).toBe(
+          "NOT_FOUND:PROPOSAL_NOT_FOUND",
+        );
+        expect(await errorOf(as(U.dirA).list({ ccaID: CCA_A }))).toBe(
           "FORBIDDEN:NOT_PROPOSAL_READER",
         );
       });
@@ -540,6 +588,110 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
             as(U.headA).submit({ id: "0123456789abcdef01234567", version: 0 }),
           ),
         ).toBe("NOT_FOUND:PROPOSAL_NOT_FOUND");
+      });
+    });
+
+    describe("rate limits (per person, per action, one hour)", () => {
+      /** Put a person's counter for one action at `count` in a live window. */
+      const seed = (action: string, userID: string, count: number) => {
+        const data = {
+          count,
+          expiresAt: new Date(Date.now() + 3_600_000),
+        };
+        return db.rateLimit.upsert({
+          where: { key: `proposal.${action}:${userID}` },
+          create: { key: `proposal.${action}:${userID}`, ...data },
+          update: data,
+        });
+      };
+      const rows = () => db.proposal.count({ where: { ccaID: CCA_A } });
+
+      it("the ceilings are create 10, update 120, submit 20 an hour", async () => {
+        const limits = await import("../proposals/limits");
+        expect(limits.PROPOSAL_LIMITS).toEqual({
+          create: 10,
+          update: 120,
+          submit: 20,
+        });
+        expect(limits.PROPOSAL_WINDOW_MS).toBe(3_600_000);
+      });
+
+      it("the eleventh create in an hour is refused and writes nothing", async () => {
+        const head = as(U.headA);
+        for (let i = 0; i < 10; i += 1) {
+          await head.create(draftInput(CCA_A, { title: `Night ${i}` }));
+        }
+        expect(await rows()).toBe(10);
+
+        const answer = await errorOf(head.create(draftInput(CCA_A)));
+        expect(answer).toMatch(/^TOO_MANY_REQUESTS:RATE_LIMITED:\d+$/);
+        expect(await rows()).toBe(10);
+      });
+
+      it("the limit is per person: another head of the same CCA is not held up", async () => {
+        await seed("create", U.headA, 10);
+        expect(await errorOf(as(U.headA).create(draftInput(CCA_A)))).toMatch(
+          /^TOO_MANY_REQUESTS:RATE_LIMITED:/,
+        );
+        expect(await errorOf(as(U.headA2).create(draftInput(CCA_A)))).toBe(
+          "ok",
+        );
+      });
+
+      it("the limit is per action: a spent create budget does not block update or submit", async () => {
+        const made = await makeDraft();
+        await seed("create", U.headA, 10);
+        const head = as(U.headA);
+        expect(
+          await errorOf(head.update({ id: made.id, version: 0, title: "y" })),
+        ).toBe("ok");
+        expect(await errorOf(head.submit({ id: made.id, version: 1 }))).toBe(
+          "ok",
+        );
+      });
+
+      it("a spent update budget refuses the save and leaves the row alone", async () => {
+        const made = await makeDraft();
+        await seed("update", U.headA, 120);
+        const before = await snapshot(made.id);
+
+        const answer = await errorOf(
+          as(U.headA).update({ id: made.id, version: 0, title: "z" }),
+        );
+
+        expect(answer).toMatch(/^TOO_MANY_REQUESTS:RATE_LIMITED:\d+$/);
+        expect(await snapshot(made.id)).toEqual(before);
+      });
+
+      it("a spent submit budget refuses the submit and leaves the draft alone", async () => {
+        const made = await makeDraft();
+        await seed("submit", U.headA, 20);
+        const before = await snapshot(made.id);
+
+        const answer = await errorOf(
+          as(U.headA).submit({ id: made.id, version: 0 }),
+        );
+
+        expect(answer).toMatch(/^TOO_MANY_REQUESTS:RATE_LIMITED:\d+$/);
+        expect(await snapshot(made.id)).toEqual(before);
+      });
+
+      it("a person who may not act spends no budget and leaves no counter", async () => {
+        const made = await makeDraft();
+        await as(U.headB)
+          .create(draftInput(CCA_A))
+          .catch(() => undefined);
+        await as(U.headB)
+          .update({ id: made.id, version: 0, title: "x" })
+          .catch(() => undefined);
+        await as(U.headB)
+          .submit({ id: made.id, version: 0 })
+          .catch(() => undefined);
+        expect(
+          await db.rateLimit.count({
+            where: { key: { endsWith: `:${U.headB}` } },
+          }),
+        ).toBe(0);
       });
     });
 
@@ -675,7 +827,7 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           }),
         );
 
-        expect(answer).not.toBe("ok");
+        expect(answer).toBe("INTERNAL_SERVER_ERROR:Something went wrong.");
         // The move, its history row and its audit row were written before the
         // notice failed; none of them survived.
         expect(await snapshot(made.id)).toEqual(before);
@@ -685,6 +837,34 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         expect(
           (await db.proposal.findUnique({ where: { id: made.id } }))?.status,
         ).toBe("in_review");
+      });
+
+      it("a forced createMany failure reaches the caller with no raw message, and the real one goes to the server log", async () => {
+        const made = await makeDraft();
+        const spy = vi
+          .spyOn(console, "error")
+          .mockImplementation(() => undefined);
+        try {
+          let thrown: unknown;
+          try {
+            await as(U.headA, EVERYTHING, withFailingNotices()).submit({
+              id: made.id,
+              version: 0,
+            });
+          } catch (error) {
+            thrown = error;
+          }
+          const e = thrown as { code?: string; message?: string };
+          expect(e.code).toBe("INTERNAL_SERVER_ERROR");
+          expect(e.message).toBe("Something went wrong.");
+          expect(String(e.message)).not.toMatch(/boom|prisma|invocation/i);
+
+          // The detail is not lost: it is logged for the operator.
+          const logged = spy.mock.calls.map((c) => String(c[0])).join("\n");
+          expect(logged).toContain("boom");
+        } finally {
+          spy.mockRestore();
+        }
       });
 
       it("submitting twice, or with a stale version, is a CONFLICT", async () => {
