@@ -12,6 +12,7 @@ type Check = {
   label: string;
   offenders: string[];
   always: boolean;
+  blocks: "proposals" | "disposables" | null;
   note: string;
 };
 type Input = {
@@ -28,13 +29,17 @@ type Input = {
   terms: { userID: string; endsAt: Date }[];
   now: Date;
 };
-const { evaluateDirectorChecks, liveJcrcSet } = (await import(
+const { evaluateDirectorChecks, liveJcrcSet, isGating } = (await import(
   /* @vite-ignore */ lib
 )) as {
   evaluateDirectorChecks: (input: Input) => {
     flaggedPositions: number;
     checks: Check[];
   };
+  isGating: (
+    check: Pick<Check, "always" | "blocks">,
+    state: { flagArg: boolean; directorsOn: boolean; proposalsOn: boolean },
+  ) => boolean;
   liveJcrcSet: (
     userRoles: Input["userRoles"],
     terms: Input["terms"],
@@ -363,5 +368,57 @@ describe("holders of flagged positions who lack jcrc", () => {
       }),
     );
     expect(check(result, label).offenders).toEqual([]);
+  });
+});
+
+describe("isGating: which switch turns a \"not set up\" line RED", () => {
+  const off = { flagArg: false, directorsOn: false, proposalsOn: false };
+  const noDirector = (c = base()) =>
+    check(evaluateDirectorChecks(c), "CCAs with no current qualifying director");
+  const social = (c = base()) =>
+    check(
+      evaluateDirectorChecks(c),
+      "handlesDisposables position has a current qualifying holder",
+    );
+
+  it("tags each not-set-up line with the switch it blocks", () => {
+    expect(noDirector().blocks).toBe("proposals");
+    expect(social().blocks).toBe("disposables");
+    expect(noDirector().always).toBe(false);
+    expect(social().always).toBe(false);
+  });
+
+  it("with every switch off, neither not-set-up line gates", () => {
+    expect(isGating(noDirector(), off)).toBe(false);
+    expect(isGating(social(), off)).toBe(false);
+  });
+
+  it("proposals.enabled on makes the no-director line gate, and only that one", () => {
+    const on = { ...off, proposalsOn: true };
+    expect(isGating(noDirector(), on)).toBe(true);
+    expect(isGating(social(), on)).toBe(false);
+  });
+
+  it("--directors or directors.enabled gates both, as before", () => {
+    for (const state of [
+      { ...off, flagArg: true },
+      { ...off, directorsOn: true },
+    ]) {
+      expect(isGating(noDirector(), state)).toBe(true);
+      expect(isGating(social(), state)).toBe(true);
+    }
+  });
+
+  it("a line that is wrong whenever it appears always gates", () => {
+    const result = evaluateDirectorChecks(base());
+    for (const c of result.checks.filter((c) => c.always)) {
+      expect(isGating(c, off)).toBe(true);
+    }
+  });
+
+  it("only an exact true counts as the proposals switch", () => {
+    expect(
+      isGating(noDirector(), { ...off, proposalsOn: undefined as never }),
+    ).toBe(false);
   });
 });
