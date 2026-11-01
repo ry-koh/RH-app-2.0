@@ -16,6 +16,7 @@ import {
   FileText,
   Network,
   Award,
+  MessageSquare,
 } from "lucide-react";
 
 import Header from "~/app/_components/header";
@@ -115,6 +116,15 @@ const ADMIN_TABS = [
     href: "/admin/audit",
     label: "Audit log",
     icon: ScrollText,
+    requires: "readAuditLog",
+  },
+  // Feedback from the in-app form — admin only (readAuditLog is admin-only).
+  // Behind feedback.enabled, checked in the procedures; the page says so while
+  // it is off. The segment layout re-checks the role.
+  {
+    href: "/admin/feedback",
+    label: "Feedback",
+    icon: MessageSquare,
     requires: "readAuditLog",
   },
 ] as const satisfies readonly {
