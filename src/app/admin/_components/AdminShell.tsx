@@ -119,8 +119,8 @@ const ADMIN_TABS = [
     requires: "readAuditLog",
   },
   // Feedback from the in-app form — admin only (readAuditLog is admin-only).
-  // Behind feedback.enabled, checked in the procedures; the page says so while
-  // it is off. The segment layout re-checks the role.
+  // Hidden until feedback.enabled is on; the procedures check it too, and the
+  // segment layout re-checks the role.
   {
     href: "/admin/feedback",
     label: "Feedback",
@@ -151,10 +151,17 @@ export default function AdminShell({
       retry: false,
       staleTime: 60_000,
     }).data?.enabled === true;
+  // Same rule: hidden while off, loading or failed.
+  const feedbackEnabled =
+    api.feedback.enabled.useQuery(undefined, {
+      retry: false,
+      staleTime: 60_000,
+    }).data?.enabled === true;
   const tabs = ADMIN_TABS.filter(
     (t) =>
       capabilities[t.requires] === true &&
-      (t.href !== "/admin/transcripts" || transcriptEnabled),
+      (t.href !== "/admin/transcripts" || transcriptEnabled) &&
+      (t.href !== "/admin/feedback" || feedbackEnabled),
   );
 
   return (
