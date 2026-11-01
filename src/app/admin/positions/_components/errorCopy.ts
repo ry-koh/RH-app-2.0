@@ -27,7 +27,7 @@ const COPY: Record<string, string> = {
   ADMIN_REQUIRED: "Only an admin can set or clear director powers.",
   DIRECTORS_DISABLED: "Director powers are switched off.",
   CONFIRMATION_STALE:
-    "The holders or CCAs changed while you were checking them. Review them again.",
+    "The holders or CCAs changed while you were working. Reload and try again.",
   SELF_ASSIGNED_HOLDER:
     "A current holder added themselves to this position. Remove them and have someone else add them first.",
 };

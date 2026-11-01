@@ -1,6 +1,7 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 
+import { isWriteConflict } from "~/lib/transcript/writeConflict";
 import { writeAudit } from "~/server/api/routers/admin";
 import { activeHolderWhere } from "~/server/api/services/jcrcPositions";
 import {
@@ -79,22 +80,69 @@ export type PositionSnapshot = {
   ccaIDs: number[];
 };
 
+/**
+ * SERIALISING ON THE POSITION DOCUMENT. A check ("is it flagged?") followed by
+ * a write is a race: an admin can flag the position, or a plain member can
+ * change it, between the two. So every procedure that changes a position's
+ * holders, CCAs, name or flag runs its read of the position, its lock check
+ * and its writes in ONE transaction (positionTransaction) that also writes the
+ * position row itself (touchPosition). MongoDB aborts the second of two
+ * overlapping transactions that write the same document, so a check made on a
+ * stale read cannot commit. The loser gets CONFLICT CONFIRMATION_STALE and the
+ * screen asks the person to try again; nothing is retried silently. Audit rows
+ * are written after the commit.
+ */
+export const POSITION_CONFLICT = "CONFIRMATION_STALE";
+
+/** Runs `run` in a transaction; a write conflict becomes a CONFLICT refusal. */
+export async function positionTransaction<T>(
+  db: PrismaClient,
+  run: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  try {
+    return await db.$transaction(run);
+  } catch (err) {
+    if (isWriteConflict(err)) {
+      throw new TRPCError({ code: "CONFLICT", message: POSITION_CONFLICT });
+    }
+    throw err;
+  }
+}
+
+/**
+ * A timestamp that is certain to differ from the stored one. A write that
+ * leaves a value as it was may not conflict, so the stamp is never equal.
+ */
+export function nextUpdatedAt(previous: Date, now: Date = new Date()): Date {
+  return new Date(Math.max(now.getTime(), previous.getTime() + 1));
+}
+
+/** Writes the position row (its `updatedAt`), so overlapping transactions conflict. */
+export async function touchPosition(
+  tx: Pick<PrismaClient, "jcrcPosition">,
+  position: { id: string; updatedAt: Date },
+): Promise<void> {
+  await tx.jcrcPosition.update({
+    where: { id: position.id },
+    data: { updatedAt: nextUpdatedAt(position.updatedAt) },
+  });
+}
+
 /** The holders and CCAs of a position at this moment. */
 export async function snapshotPosition(
   db: Pick<PrismaClient, "jcrcPositionHolder" | "jcrcPositionCca">,
   positionID: string,
   now: Date = new Date(),
 ): Promise<PositionSnapshot> {
-  const [holders, links] = await Promise.all([
-    db.jcrcPositionHolder.findMany({
-      where: { positionID, ...activeHolderWhere(now) },
-      select: { userID: true, assignedBy: true },
-    }),
-    db.jcrcPositionCca.findMany({
-      where: { positionID },
-      select: { ccaID: true },
-    }),
-  ]);
+  // One after the other: inside a transaction the reads share one session.
+  const holders = await db.jcrcPositionHolder.findMany({
+    where: { positionID, ...activeHolderWhere(now) },
+    select: { userID: true, assignedBy: true },
+  });
+  const links = await db.jcrcPositionCca.findMany({
+    where: { positionID },
+    select: { ccaID: true },
+  });
   return {
     holders: holders
       .map((h) => ({ userID: h.userID, assignedBy: h.assignedBy }))
