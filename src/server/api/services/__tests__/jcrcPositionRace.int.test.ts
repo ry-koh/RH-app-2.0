@@ -24,6 +24,7 @@ const U = {
   holder: "E9990503",
   admin: "E9990504",
   selfAdmin: "E9990505",
+  successor: "E9990506",
 };
 const ALL_IDS = Object.values(U);
 const JCRC = ["resident", "jcrc"];
@@ -219,6 +220,7 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       }
       await setRoles(U.admin, ADMIN);
       await setRoles(U.selfAdmin, ADMIN_JCRC);
+      await setRoles(U.successor, ["resident"]);
     });
 
     afterAll(async () => {
@@ -360,56 +362,87 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
     });
 
     describe("the self-assigned mark", () => {
-      it("survives another member re-adding the self-assigned holder", async () => {
+      /** A position whose holder gave it to themselves (an admin may, unflagged). */
+      const selfAssigned = async () => {
         const id = await makePosition();
-        // An admin may give themselves an UNFLAGGED position (#119's rule).
         await as(U.selfAdmin, ADMIN_JCRC).addHolder({
           id,
           userID: U.selfAdmin,
         });
-        const markOf = async (userID: string) =>
-          (
-            await db.jcrcPositionHolder.findFirst({
-              where: { positionID: id, userID },
-            })
-          )?.assignedBy;
-        expect(await markOf(U.selfAdmin)).toBe(U.selfAdmin);
+        return id;
+      };
+      const markOf = async (id: string, userID: string) =>
+        (
+          await db.jcrcPositionHolder.findFirst({
+            where: { positionID: id, userID },
+          })
+        )?.assignedBy;
+      const setVets = (id: string) =>
+        errorOf(
+          as(U.admin, ADMIN).setFlag({
+            id,
+            flag: "vetsProposals",
+            value: true,
+            seen: { holderIDs: [U.holder, U.selfAdmin], ccaIDs: [9001, 9002] },
+          }),
+        );
+      const handOver = (id: string) =>
+        errorOf(
+          as(U.selfAdmin, ADMIN_JCRC).handOver({
+            positionIDs: [id],
+            successorIDs: [U.successor],
+            stepOutAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          }),
+        );
 
-        // Another member re-adds them: the mark must not be washed away.
+      it("survives a plain member re-adding the holder: flagging and handover are still refused", async () => {
+        const id = await selfAssigned();
+        expect(await markOf(id, U.selfAdmin)).toBe(U.selfAdmin);
+
         expect(
           await errorOf(
             as(U.plain, JCRC).addHolder({ id, userID: U.selfAdmin }),
           ),
         ).toBe("ok");
-        expect(await markOf(U.selfAdmin)).toBe(U.selfAdmin);
+        expect(await markOf(id, U.selfAdmin)).toBe(U.selfAdmin);
 
+        expect(await setVets(id)).toBe("FORBIDDEN:SELF_ASSIGNED_HOLDER");
+        expect(await auditActions()).toEqual([]);
+        expect(await handOver(id)).toBe("FORBIDDEN:SELF_ASSIGNED_POSITION");
+      });
+
+      it("survives the holder re-adding themselves", async () => {
+        const id = await selfAssigned();
         expect(
           await errorOf(
-            as(U.admin, ADMIN).setFlag({
+            as(U.selfAdmin, ADMIN_JCRC).addHolder({
               id,
-              flag: "vetsProposals",
-              value: true,
-              seen: {
-                holderIDs: [U.holder, U.selfAdmin],
-                ccaIDs: [9001, 9002],
-              },
+              userID: U.selfAdmin,
             }),
           ),
-        ).toBe("FORBIDDEN:SELF_ASSIGNED_HOLDER");
-        expect(await auditActions()).toEqual([]);
+        ).toBe("ok");
+        expect(await markOf(id, U.selfAdmin)).toBe(U.selfAdmin);
+        expect(await setVets(id)).toBe("FORBIDDEN:SELF_ASSIGNED_HOLDER");
+      });
+
+      it("is cleared when a different admin re-adds the holder: flagging and handover are then allowed", async () => {
+        const id = await selfAssigned();
+        expect(
+          await errorOf(
+            as(U.admin, ADMIN).addHolder({ id, userID: U.selfAdmin }),
+          ),
+        ).toBe("ok");
+        expect(await markOf(id, U.selfAdmin)).toBe(U.admin);
+
+        expect(await setVets(id)).toBe("ok");
+        expect(await handOver(id)).toBe("ok");
       });
 
       it("still lets a re-add replace the assigner of an ordinary row", async () => {
         const id = await makePosition();
-        const markOf = async () =>
-          (
-            await db.jcrcPositionHolder.findFirst({
-              where: { positionID: id, userID: U.holder },
-            })
-          )?.assignedBy;
-        expect(await markOf()).toBe(U.admin);
+        expect(await markOf(id, U.holder)).toBe(U.admin);
         await as(U.plain, JCRC).addHolder({ id, userID: U.holder });
-        expect(await markOf()).toBe(U.plain);
+        expect(await markOf(id, U.holder)).toBe(U.plain);
       });
     });
   },

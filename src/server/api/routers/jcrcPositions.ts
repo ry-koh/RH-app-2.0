@@ -22,6 +22,7 @@ import { isDirectorsEnabled } from "~/server/api/services/directorGuard";
 import {
   POSITION_AUDIT,
   assertMayEditFlaggedPosition,
+  mayEditFlaggedPosition,
   auditFlaggedChange,
   describeSnapshot,
   isFlaggedPosition,
@@ -541,12 +542,16 @@ export const jcrcPositionsRouter = createTRPCRouter({
             positionID_userID: { positionID: input.id, userID: input.userID },
           };
           // A row the person made for themselves keeps that mark: setFlag and
-          // the handover refuse such a row, and re-adding it must not wash it.
+          // the handover refuse such a row. Only someone else with authority
+          // (admin, RF, Hall Office), re-assigning it, clears the mark; a plain
+          // member's re-add and the holder's own re-add leave it.
           const existing = await tx.jcrcPositionHolder.findUnique({
             where: key,
             select: { assignedBy: true },
           });
-          const selfAssigned = existing?.assignedBy === input.userID;
+          const keepsMark =
+            existing?.assignedBy === input.userID &&
+            !(mayEditFlaggedPosition(actorRoles) && actor !== input.userID);
           await tx.jcrcPositionHolder.upsert({
             where: key,
             create: {
@@ -558,7 +563,7 @@ export const jcrcPositionsRouter = createTRPCRouter({
             update: {
               endsAt: null,
               handedOverAt: null,
-              ...(selfAssigned ? {} : { assignedBy: actor }),
+              ...(keepsMark ? {} : { assignedBy: actor }),
               assignedAt: new Date(),
             },
           });
