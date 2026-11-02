@@ -141,10 +141,21 @@ export async function getDirectorQueue(
     }),
   ]);
   const page = rows.slice(0, QUEUE_PAGE);
+  // A director who also heads a CCA counts as its head: draft-stage comments
+  // there stay in their count. Strict read, no catch.
+  const headed = new Set(
+    (
+      await db.ccaHead.findMany({
+        where: { userID, ccaID: { in: ccaIDs } },
+        select: { ccaID: true },
+      })
+    ).map((h) => h.ccaID),
+  );
   const unread = await unreadCounts(
     db,
     userID,
     page.map((r) => r.id),
+    new Set(page.filter((r) => headed.has(r.ccaID)).map((r) => r.id)),
   );
   return {
     items: page.map((r) => ({

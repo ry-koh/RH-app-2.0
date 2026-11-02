@@ -3,12 +3,16 @@ import { TRPCError } from "@trpc/server";
 
 import { directorProposalHref, headProposalHref } from "~/lib/proposals/links";
 import { notify } from "~/server/api/services/notifications";
-import { assertProposalReader, directorsOrRefuse } from "./access";
+import {
+  assertProposalReader,
+  directorsOrRefuse,
+  type ProposalViewer,
+} from "./access";
 import { PROPOSAL_NOT_FOUND } from "./drafts";
 import { assertWithinLimit } from "./limits";
 import { displayNames } from "./names";
 import { hiddenFromDirector } from "./read";
-import { unreadCounts } from "./unread";
+import { NOT_HEADS_ONLY, unreadCounts } from "./unread";
 
 /**
  * The comment thread of a proposal (F11).
@@ -51,6 +55,8 @@ export type CommentItem = {
   authorName: string | null;
   /** Someone else's comment, newer than this reader's marker. */
   isNew: boolean;
+  /** Written while the proposal was a draft: only heads see it. */
+  headsOnly: boolean;
 };
 
 export type CommentPage = {
@@ -62,6 +68,7 @@ export type CommentPage = {
 };
 
 type ThreadRow = {
+  viewer: ProposalViewer;
   id: string;
   ccaID: number;
   status: string;
@@ -86,7 +93,7 @@ async function openThread(
   if (hiddenFromDirector(viewer, row.status)) {
     throw new TRPCError({ code: "NOT_FOUND", message: PROPOSAL_NOT_FOUND });
   }
-  return row;
+  return { ...row, viewer };
 }
 
 /** A pure read: one page of the thread and the reader's unread count. */
@@ -98,7 +105,12 @@ export async function listComments(
   const row = await openThread(db, userID, input.proposalID);
   const [rows, marker, counts] = await Promise.all([
     db.proposalComment.findMany({
-      where: { proposalID: row.id },
+      where: {
+        proposalID: row.id,
+        // A comment from the draft stage is the heads' alone (a head who is
+        // also a director is a head here).
+        ...(row.viewer !== "head" && NOT_HEADS_ONLY),
+      },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: COMMENT_PAGE + 1,
       ...(input.cursor !== undefined && { cursor: { id: input.cursor } }),
@@ -107,7 +119,12 @@ export async function listComments(
       where: { proposalID_userID: { proposalID: row.id, userID } },
       select: { readAt: true },
     }),
-    unreadCounts(db, userID, [row.id]),
+    unreadCounts(
+      db,
+      userID,
+      [row.id],
+      row.viewer === "head" ? new Set([row.id]) : undefined,
+    ),
   ]);
   const page = rows.slice(0, COMMENT_PAGE);
   const names = await displayNames(
@@ -121,6 +138,7 @@ export async function listComments(
       createdAt: c.createdAt,
       mine: c.authorID === userID,
       authorName: c.authorID ? (names.get(c.authorID) ?? null) : null,
+      headsOnly: c.headsOnly === true,
       isNew:
         c.authorID !== userID &&
         (marker === null || c.createdAt.getTime() > marker.readAt.getTime()),
@@ -137,17 +155,19 @@ export async function listComments(
  * so a head or director who changed a minute ago is told correctly. A read
  * that fails rolls the comment back with it.
  *
- * A draft's comment goes to heads only: directors cannot open a draft. Each
+ * The comment is written here too, marked `headsOnly` while the proposal is a
+ * draft. A draft's comment goes to heads only: directors cannot open a draft. Each
  * person gets one notice, with the link to the route they can open: the head
  * route for a head (including someone who is also a director), the director
  * route for a director who heads nothing. The body is the proposal's title,
  * not the comment.
  */
-async function noticeOfComment(
+async function writeComment(
   tx: Prisma.TransactionClient,
   proposalID: string,
   authorID: string,
-): Promise<void> {
+  body: string,
+): Promise<{ id: string; createdAt: Date }> {
   const proposal = await tx.proposal.findUnique({
     where: { id: proposalID },
     select: { ccaID: true, status: true, title: true },
@@ -155,6 +175,19 @@ async function noticeOfComment(
   if (!proposal) {
     throw new TRPCError({ code: "NOT_FOUND", message: PROPOSAL_NOT_FOUND });
   }
+  // The privacy of the comment is decided HERE, from the status read inside
+  // this transaction, never from the status read before it. A submit that
+  // commits while this transaction runs is not seen by its snapshot, so the
+  // comment stays heads-only: an overlap falls on the private side.
+  const comment = await tx.proposalComment.create({
+    data: {
+      proposalID,
+      authorID,
+      body,
+      headsOnly: proposal.status === "draft",
+    },
+    select: { id: true, createdAt: true },
+  });
   const heads = (
     await tx.ccaHead.findMany({
       where: { ccaID: proposal.ccaID },
@@ -185,6 +218,7 @@ async function noticeOfComment(
     recipients: directors,
     href: directorProposalHref(proposalID),
   });
+  return comment;
 }
 
 export async function addComment(
@@ -198,14 +232,7 @@ export async function addComment(
     throw new TRPCError({ code: "CONFLICT", message: COMMENTS_CLOSED });
   }
   // The comment and its notices commit together or not at all.
-  return db.$transaction(async (tx) => {
-    const comment = await tx.proposalComment.create({
-      data: { proposalID: row.id, authorID: userID, body: input.body },
-      select: { id: true, createdAt: true },
-    });
-    await noticeOfComment(tx, row.id, userID);
-    return comment;
-  });
+  return db.$transaction((tx) => writeComment(tx, row.id, userID, input.body));
 }
 
 const isUniqueViolation = (err: unknown) =>

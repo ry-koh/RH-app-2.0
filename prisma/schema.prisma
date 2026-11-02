@@ -1714,6 +1714,9 @@ model ProposalComment {
   /// The author; null once their account is deleted, the comment stays.
   authorID   String?
   body       String
+  /// True for a comment written while the proposal was a draft: only heads read
+  /// and count it. Null (a row from before the field) means false.
+  headsOnly  Boolean?
   createdAt  DateTime @default(now())
 
   @@index([proposalID, createdAt], map: "proposal_comment_proposal_created")

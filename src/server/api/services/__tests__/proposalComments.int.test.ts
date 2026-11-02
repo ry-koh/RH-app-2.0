@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import type { createCaller as CreateCaller } from "~/server/api/root";
 import {
   afterAll,
@@ -535,11 +535,12 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           await errorOf(as(U.dirHead).commentList({ proposalID: id })),
         ).toBe("ok");
 
-        // Once it is submitted the director reads the whole thread.
+        // Once it is submitted the director opens the thread, but the draft-stage
+        // comments stay the heads' (see "heads-only comments").
         const sent = await as(U.headA).get({ id });
         await as(U.headA).submit({ id, version: sent.version });
         expect((await dir.commentList({ proposalID: id })).items).toHaveLength(
-          1,
+          0,
         );
       });
     });
@@ -844,6 +845,138 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       });
     });
 
+    describe("heads-only comments (draft stage)", () => {
+      const submitted = async () => {
+        const id = await stage("draft");
+        await as(U.headA).commentAdd({ proposalID: id, body: "draft talk" });
+        await as(U.headA2).commentAdd({ proposalID: id, body: "draft reply" });
+        const cur = await as(U.headA).get({ id });
+        await as(U.headA).submit({ id, version: cur.version });
+        return id;
+      };
+
+      it("after submit a director's list, count, page and queue leave the draft-stage comments out, and a head still sees them", async () => {
+        const id = await submitted();
+        const dir = as(U.dirA);
+
+        const page = await dir.commentList({ proposalID: id });
+        expect(page.items).toEqual([]);
+        expect(page.unread).toBe(0);
+        expect((await dir.get({ id })).unread).toBe(0);
+        expect((await dir.directorQueue({})).items[0]).toMatchObject({
+          id,
+          unread: 0,
+        });
+
+        const head = await as(U.headA).commentList({ proposalID: id });
+        expect(head.items.map((c) => [c.body, c.headsOnly])).toEqual([
+          ["draft reply", true],
+          ["draft talk", true],
+        ]);
+        expect(head.unread).toBe(1); // headA's own comment does not count
+      });
+
+      it("a comment written after submit is visible to both, and unread for both", async () => {
+        const id = await submitted();
+        await as(U.headA).commentAdd({ proposalID: id, body: "open now" });
+
+        const dir = await as(U.dirA).commentList({ proposalID: id });
+        expect(dir.items.map((c) => [c.body, c.headsOnly])).toEqual([
+          ["open now", false],
+        ]);
+        expect(dir.unread).toBe(1);
+        const head = await as(U.headA2).commentList({ proposalID: id });
+        expect(head.items).toHaveLength(3);
+        expect(head.unread).toBe(2); // draft talk + open now
+      });
+
+      it("a needs_action comment is visible to directors", async () => {
+        const id = await stage("needs_action");
+        await as(U.headA).commentAdd({ proposalID: id, body: "fixed it" });
+        const dir = await as(U.dirA).commentList({ proposalID: id });
+        expect(dir.items.map((c) => [c.body, c.headsOnly])).toEqual([
+          ["fixed it", false],
+        ]);
+      });
+
+      it("a head who is also a director sees every comment and counts each once", async () => {
+        const id = await submitted();
+        await as(U.headA).commentAdd({ proposalID: id, body: "open now" });
+        const both = as(U.dirHead);
+
+        const page = await both.commentList({ proposalID: id });
+        expect(page.items).toHaveLength(3);
+        expect(page.unread).toBe(3);
+        expect((await both.get({ id })).unread).toBe(3);
+        expect((await both.directorQueue({})).items[0]).toMatchObject({
+          id,
+          unread: 3,
+        });
+        expect((await both.list({ ccaID: CCA_A })).items[0]?.unread).toBe(3);
+      });
+
+      it("the privacy comes from the status read inside the transaction, not the one before it", async () => {
+        const id = await stage("in_review");
+        // The earlier read says in_review; the transaction's snapshot says draft.
+        const stale = proxied(db, (prop) =>
+          prop === "$transaction"
+            ? (fn: (tx: unknown) => Promise<unknown>, opts?: never) =>
+                db.$transaction(
+                  (tx) =>
+                    fn(
+                      new Proxy(tx, {
+                        get(t, p) {
+                          if (p !== "proposal") {
+                            return Reflect.get(t, p) as unknown;
+                          }
+                          return {
+                            findUnique: async (args: never) => {
+                              const row = await t.proposal.findUnique(args);
+                              return row && { ...row, status: "draft" };
+                            },
+                          };
+                        },
+                      }),
+                    ),
+                  opts,
+                )
+            : undefined,
+        );
+        await as(U.headA, EVERYTHING, stale).commentAdd({
+          proposalID: id,
+          body: "overlap",
+        });
+        const row = await db.proposalComment.findFirst({
+          where: { proposalID: id },
+        });
+        expect(row?.headsOnly).toBe(true);
+        expect(
+          (await as(U.dirA).commentList({ proposalID: id })).items,
+        ).toEqual([]);
+        expect(await noticesOf(U.dirA, "proposal.comment")).toHaveLength(0);
+      });
+
+      it("a comment row from before the field existed is visible to directors", async () => {
+        const id = await stage("in_review");
+        await db.$runCommandRaw({
+          insert: "ProposalComment",
+          documents: [
+            {
+              proposalID: { $oid: id },
+              authorID: U.headA,
+              body: "old row",
+              createdAt: { $date: new Date().toISOString() },
+            },
+          ],
+        });
+        const page = await as(U.dirA).commentList({ proposalID: id });
+        expect(page.items.map((c) => [c.body, c.headsOnly])).toEqual([
+          ["old row", false],
+        ]);
+        expect(page.unread).toBe(1);
+      });
+    });
+
     describe("notices of a comment", () => {
       it("go to the CCA's other heads and its directors, once each, with the route each can open", async () => {
         const id = await stage("in_review");
@@ -1120,6 +1253,52 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           expect(await noticesOf(U.dirA, "proposal.nudge")).toHaveLength(1);
           expect(await noticesOf(U.dirHead, "proposal.nudge")).toHaveLength(1);
         }
+      });
+
+      const conflict = () =>
+        new Prisma.PrismaClientKnownRequestError("write conflict", {
+          code: "P2034",
+          clientVersion: "test",
+        });
+
+      /** A database whose first `fails` transactions throw a write conflict. */
+      const conflicting = (fails: number): PrismaClient => {
+        let left = fails;
+        return proxied(db, (prop) =>
+          prop === "$transaction"
+            ? (fn: never, opts?: never) => {
+                if (left > 0) {
+                  left -= 1;
+                  return Promise.reject(conflict());
+                }
+                return db.$transaction(fn, opts);
+              }
+            : undefined,
+        );
+      };
+
+      it("retries once on a write conflict and then sends", async () => {
+        const id = await stage("in_review");
+        const res = await as(U.headA, EVERYTHING, conflicting(1)).nudge({ id });
+        expect(res).toMatchObject({ status: "sent", sent: 2 });
+        expect(await noticesOf(U.dirA, "proposal.nudge")).toHaveLength(1);
+      });
+
+      it("a conflict that persists is a try-again error, never 'already sent', even when a same-day key exists", async () => {
+        const id = await stage("in_review");
+        await as(U.headA).nudge({ id }); // keys now exist for today
+        await setRoles(U.dirA2, ["resident", "jcrc"]);
+        await makePosition("Dir A2", [CCA_A], U.dirA2);
+
+        const answer = await errorOf(
+          as(U.headA, EVERYTHING, conflicting(2)).nudge({ id }),
+        );
+
+        expect(answer).toBe("CONFLICT:NUDGE_TRY_AGAIN");
+        // the new director was not nudged, and the head can press again
+        expect(await noticesOf(U.dirA2, "proposal.nudge")).toHaveLength(0);
+        expect((await as(U.headA).nudge({ id })).status).toBe("sent");
+        expect(await noticesOf(U.dirA2, "proposal.nudge")).toHaveLength(1);
       });
 
       it("a recipient read that fails refuses the nudge and writes nothing", async () => {

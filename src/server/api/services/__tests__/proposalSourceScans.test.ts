@@ -483,8 +483,9 @@ describe("proposal access never uses a forgiving read", () => {
     const nudge = stripComments(
       read("src/server/api/services/proposals/nudge.ts"),
     );
-    expect(nudge.match(/\bcatch\b/g)).toHaveLength(1);
-    expect(nudge).toMatch(/if \(!isRaceError\(err\)\) throw err;/);
+    expect(nudge.match(/\bcatch\b/g)).toHaveLength(2);
+    expect(nudge).toMatch(/NUDGE_TRY_AGAIN/);
+    expect(nudge).toMatch(/throw first;/);
   });
 
   it("every gated proposal procedure runs inside sanitizeErrors", () => {

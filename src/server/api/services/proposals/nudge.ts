@@ -50,9 +50,10 @@ export type NudgeResult =
 const nudgeScope = (proposalID: string, now: Date) =>
   `proposal.nudge:${proposalID}:${sgtDayKey(now)}`;
 
-const isRaceError = (err: unknown) =>
-  err instanceof Prisma.PrismaClientKnownRequestError &&
-  (err.code === "P2002" || err.code === "P2034");
+export const NUDGE_TRY_AGAIN = "NUDGE_TRY_AGAIN";
+
+const prismaCode = (err: unknown) =>
+  err instanceof Prisma.PrismaClientKnownRequestError ? err.code : null;
 
 export async function nudgeDirectors(
   db: PrismaClient,
@@ -73,8 +74,8 @@ export async function nudgeDirectors(
   }
 
   const scope = nudgeScope(row.id, new Date());
-  try {
-    return await db.$transaction(async (tx) => {
+  const attempt = () =>
+    db.$transaction(async (tx) => {
       // Re-read inside the transaction: the status may have moved since.
       const current = await tx.proposal.findUnique({
         where: { id: row.id },
@@ -126,13 +127,32 @@ export async function nudgeDirectors(
             alreadySent: result.alreadySent,
           } as const);
     });
+
+  // Two nudges at once, or a write conflict: try once more. The second pass
+  // reads the keys the first left, so it sends to whoever is still missing.
+  try {
+    return await attempt();
+  } catch (first) {
+    const code = prismaCode(first);
+    if (code !== "P2002" && code !== "P2034") throw first;
+  }
+  try {
+    return await attempt();
   } catch (err) {
-    if (!isRaceError(err)) throw err;
-    // Two nudges at once: the key's unique index let one of them through.
-    const taken = await db.notification.count({
-      where: { noticeKey: { startsWith: `${scope}|` } },
-    });
-    if (taken === 0) throw err;
-    return { status: "already_sent", sent: 0, alreadySent: taken };
+    const code = prismaCode(err);
+    if (code === "P2002") {
+      // The unique key itself says these were sent.
+      const taken = await db.notification.count({
+        where: { noticeKey: { startsWith: `${scope}|` } },
+      });
+      if (taken > 0) {
+        return { status: "already_sent", sent: 0, alreadySent: taken };
+      }
+    }
+    if (code === "P2002" || code === "P2034") {
+      // Never read a conflict as "already sent": ask the head to press again.
+      throw new TRPCError({ code: "CONFLICT", message: NUDGE_TRY_AGAIN });
+    }
+    throw err;
   }
 }

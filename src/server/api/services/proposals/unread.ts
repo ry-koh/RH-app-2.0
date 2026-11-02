@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 
 /**
  * Each person's OWN unread count for a set of proposals, in two queries
@@ -11,6 +11,11 @@ import type { PrismaClient } from "@prisma/client";
  * than their marker. Their own comments never count for them. A comment whose
  * author was deleted (authorID cleared, B16) counts as someone else's.
  *
+ * A comment written while the proposal was a draft (`headsOnly`) is counted
+ * only for a reader who is a head there: `headsOnlyVisible` is the set of
+ * proposal ids where the caller is (also) a head. For any other proposal such
+ * comments are left out of the count.
+ *
  * A pure read: it writes nothing (marking read is its own mutation,
  * `markRead` in comments.ts). Callers have already decided the caller may read
  * every proposal id they pass, so a count never reveals a thread to someone
@@ -19,6 +24,19 @@ import type { PrismaClient } from "@prisma/client";
 
 type UnreadDb = Pick<PrismaClient, "proposalComment" | "proposalCommentRead">;
 
+/**
+ * Comments a director may see: not heads-only. On MongoDB Prisma treats a
+ * field that is absent (a row from before the field), null and false as three
+ * different things, and `not: true` matches none of them.
+ */
+export const NOT_HEADS_ONLY: Prisma.ProposalCommentWhereInput = {
+  OR: [
+    { headsOnly: { isSet: false } },
+    { headsOnly: null },
+    { headsOnly: false },
+  ],
+};
+
 /** More than a page of proposals is never asked for at once. */
 export const UNREAD_MAX_PROPOSALS = 200;
 
@@ -26,6 +44,7 @@ export async function unreadCounts(
   db: UnreadDb,
   userID: string,
   proposalIDs: readonly string[],
+  headsOnlyVisible: ReadonlySet<string> = new Set(),
 ): Promise<Map<string, number>> {
   const ids = [...new Set(proposalIDs)].slice(0, UNREAD_MAX_PROPOSALS);
   const counts = new Map<string, number>(ids.map((id) => [id, 0]));
@@ -42,9 +61,11 @@ export async function unreadCounts(
     where: {
       OR: ids.map((id) => {
         const since = readAt.get(id);
-        return since === undefined
-          ? { proposalID: id }
-          : { proposalID: id, createdAt: { gt: since } };
+        return {
+          proposalID: id,
+          ...(since !== undefined && { createdAt: { gt: since } }),
+          ...(!headsOnlyVisible.has(id) && NOT_HEADS_ONLY),
+        };
       }),
       authorID: { not: userID },
     },

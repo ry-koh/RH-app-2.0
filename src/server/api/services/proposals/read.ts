@@ -121,7 +121,12 @@ export async function getProposal(
       },
       viewer === "head",
     ),
-    unreadCounts(db, userID, [row.id]),
+    unreadCounts(
+      db,
+      userID,
+      [row.id],
+      viewer === "head" ? new Set([row.id]) : undefined,
+    ),
   ]);
   return {
     id: row.id,
@@ -189,6 +194,7 @@ export async function listProposals(
     db,
     userID,
     rows.map((r) => r.id),
+    viewer === "head" ? new Set(rows.map((r) => r.id)) : undefined,
   );
   return {
     viewer,
