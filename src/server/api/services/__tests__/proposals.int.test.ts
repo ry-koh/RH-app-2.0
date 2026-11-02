@@ -625,6 +625,8 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           return: 60,
           finish: 60,
           createEvent: 30,
+          comment: 120,
+          nudge: 30,
         });
         expect(limits.PROPOSAL_WINDOW_MS).toBe(3_600_000);
       });
