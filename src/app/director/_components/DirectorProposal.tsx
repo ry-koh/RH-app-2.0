@@ -333,6 +333,15 @@ export default function DirectorProposal({
         </section>
       )}
 
+      {(loaded.event || loaded.eventMissing) && (
+        <p className="text-sm text-gray-700">
+          <span className="font-medium">Event: </span>
+          {loaded.event
+            ? `${loaded.event.title ?? "Untitled event"} (${loaded.event.status})`
+            : "the event draft has been deleted"}
+        </p>
+      )}
+
       {loaded.history.length > 0 && (
         <section>
           <h2 className="mb-2 text-sm font-semibold text-gray-900">History</h2>

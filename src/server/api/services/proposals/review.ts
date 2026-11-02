@@ -10,6 +10,7 @@ import {
   readSelfApproved,
 } from "./access";
 import { PROPOSAL_NOT_FOUND } from "./drafts";
+import { draftEventAfterApproval } from "./eventLink";
 import { assertWithinLimit } from "./limits";
 import {
   PROPOSAL_CONFLICT,
@@ -180,12 +181,21 @@ async function noticeOfOutcome(
   });
 }
 
-export function approveProposal(
+/**
+ * Approve, and THEN, if the head asked for an Event, make its draft. The
+ * approval has committed by then; the draft step never throws and never
+ * undoes it (eventLink.ts), and the Create event button recovers a miss.
+ */
+export async function approveProposal(
   db: PrismaClient,
   userID: string,
   input: ReviewInput & { note?: string | null | undefined },
 ): Promise<ReviewResult> {
-  return reviewMove(db, userID, "approve", input, { note: input.note ?? null });
+  const result = await reviewMove(db, userID, "approve", input, {
+    note: input.note ?? null,
+  });
+  await draftEventAfterApproval(db, result.id);
+  return result;
 }
 
 export function returnProposal(
