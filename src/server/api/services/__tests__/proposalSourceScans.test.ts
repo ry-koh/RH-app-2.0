@@ -290,10 +290,10 @@ describe("proposal access never uses a forgiving read", () => {
       read("src/server/api/services/proposals/access.ts"),
     );
     // One each in assertCcaHead, assertProposalReader, proposalAccess,
-    // assertProposalDirector, directedCcasOrRefuse and readSelfApproved; each
+    // assertProposalDirector, directedCcasOrRefuse, directorsOrRefuse and readSelfApproved; each
     // calls refuseOnFailure, which throws FORBIDDEN.
-    expect(code.match(/\bcatch\b/g)).toHaveLength(6);
-    expect(code.match(/return refuseOnFailure\(err\)/g)).toHaveLength(6);
+    expect(code.match(/\bcatch\b/g)).toHaveLength(7);
+    expect(code.match(/return refuseOnFailure\(err\)/g)).toHaveLength(7);
     expect(code).toMatch(/function refuseOnFailure\(err: unknown\): never/);
   });
 

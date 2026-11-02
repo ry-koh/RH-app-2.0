@@ -640,7 +640,121 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       });
     });
 
+    describe("A64: overseesAll grants no approval", () => {
+      it("a flagged overseesAll position that lists no CCA at all is refused for every action", async () => {
+        await makePosition("Oversee none", [], U.jcrc, {
+          overseesAll: true,
+        });
+        expect(await as(U.jcrc).directorEntry()).toEqual({ show: false });
+        for (const action of ACTIONS) {
+          const p = await stageFor(action);
+          const before = await snapshot(p.id);
+          expect(await errorOf(act(as(U.jcrc), action, p)), action).toBe(
+            NOT_FOUND,
+          );
+          expect(await snapshot(p.id)).toEqual(before);
+        }
+        expect(await errorOf(as(U.jcrc).directorQueue({}))).toBe(
+          "FORBIDDEN:NOT_DIRECTOR",
+        );
+      });
+    });
+
     describe("A5: two directors acting at once", () => {
+      /**
+       * Both callers load the proposal, and neither goes on until both have
+       * (same status, same version), so the status check passes for both and
+       * only the compare-and-set can stop the loser.
+       */
+      const meeting = (n: number) => {
+        let here = 0;
+        let go!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          go = resolve;
+        });
+        return () => {
+          here += 1;
+          if (here >= n) go();
+          return gate;
+        };
+      };
+      const loadsTogether = (wait: () => Promise<void>): PrismaClient =>
+        proxied(db, (prop) =>
+          prop === "proposal"
+            ? new Proxy(db.proposal, {
+                get(t, p) {
+                  if (p === "findUnique") {
+                    return async (args: never) => {
+                      const found = await t.findUnique(args);
+                      await wait();
+                      return found;
+                    };
+                  }
+                  const v = Reflect.get(t, p, t) as unknown;
+                  return typeof v === "function"
+                    ? (v as (...a: unknown[]) => unknown).bind(t)
+                    : v;
+                },
+              })
+            : undefined,
+        );
+
+      it("both pass the status check on one version; the compare-and-set stops the loser", async () => {
+        for (let round = 0; round < 3; round++) {
+          const p = await stage("in_review");
+          const wait = meeting(2);
+          const results = await Promise.allSettled([
+            as(U.dirA, EVERYTHING, loadsTogether(wait)).approve(p),
+            as(U.dirA2, EVERYTHING, loadsTogether(wait)).approve(p),
+          ]);
+          expect(
+            results.filter((r) => r.status === "fulfilled"),
+            `round ${round}`,
+          ).toHaveLength(1);
+          const lost = results.filter((r) => r.status === "rejected");
+          expect(lost).toHaveLength(1);
+          expect(
+            lost.map((r) => (r as PromiseRejectedResult).reason as unknown),
+          ).toMatchObject([{ message: "PROPOSAL_CONFLICT" }]);
+          expect(
+            await db.proposalStatusHistory.count({
+              where: { proposalID: p.id, toStatus: "cleared" },
+            }),
+          ).toBe(1);
+          expect(
+            await db.roleAuditLog.count({
+              where: {
+                action: "proposal.transition",
+                reason: { startsWith: `proposal ${p.id}: in_review` },
+              },
+            }),
+          ).toBe(1);
+        }
+      });
+
+      it("an approval and a return on one version: one outcome, one history row", async () => {
+        const p = await stage("in_review");
+        const wait = meeting(2);
+        const results = await Promise.allSettled([
+          as(U.dirA, EVERYTHING, loadsTogether(wait)).approve(p),
+          as(U.dirA2, EVERYTHING, loadsTogether(wait)).return({
+            ...p,
+            reason: "Needs a date",
+          }),
+        ]);
+        expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+        expect(
+          results
+            .filter((r) => r.status === "rejected")
+            .map((r) => (r as PromiseRejectedResult).reason as unknown),
+        ).toMatchObject([{ message: "PROPOSAL_CONFLICT" }]);
+        expect(
+          await db.proposalStatusHistory.count({
+            where: { proposalID: p.id, fromStatus: "in_review" },
+          }),
+        ).toBe(1);
+      });
+
       it("two approvals: one wins, the other is a CONFLICT, one history row", async () => {
         for (let round = 0; round < 3; round++) {
           const p = await stage("in_review");
@@ -806,6 +920,30 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         expect((await clearedRow(p.id))?.selfApproved).toBe(true);
       });
 
+      it("a deleted creator (createdBy null) is not the approver; the head test still decides", async () => {
+        const p = await stage("in_review");
+        await db.proposal.update({
+          where: { id: p.id },
+          data: { createdBy: null },
+        });
+        await as(U.dirA).approve(p);
+        expect(await clearedRow(p.id)).toMatchObject({
+          approverID: U.dirA,
+          selfApproved: false,
+        });
+
+        const q = await stage("in_review");
+        await db.proposal.update({
+          where: { id: q.id },
+          data: { createdBy: null },
+        });
+        await as(U.dirHead).approve(q);
+        expect(await clearedRow(q.id)).toMatchObject({
+          approverID: U.dirHead,
+          selfApproved: true,
+        });
+      });
+
       it("the label is not taken from the request", async () => {
         const p = await stage("in_review");
         await as(U.dirA).approve({
@@ -943,16 +1081,16 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         const a = await stage("in_review");
         await db.notification.deleteMany({ where: {} });
         await as(U.dirHead).approve({ ...a, note: "Go ahead" });
-        const approved = await noticesOf(a.id);
-        // headA and headA2 hear; dirHead, who acted, does not.
-        expect(approved.map((n) => [n.userID, n.kind]).sort()).toEqual(
-          [
-            [U.headA, "proposal.approved"],
-            [U.headA2, "proposal.approved"],
-          ].sort(),
+        const approved = (await noticesOf(a.id)).filter(
+          (n) => n.kind === "proposal.approved",
         );
-        expect(approved[0]?.href).toBe(`/cca/${CCA_A}/proposals/${a.id}`);
-        expect(approved[0]?.body).toContain("Go ahead");
+        // The heads and the other directors hear; dirHead, who acted, does not.
+        expect(approved.map((n) => n.userID).sort()).toEqual(
+          [U.headA, U.headA2, U.dirA, U.dirA2].sort(),
+        );
+        const headsNotice = approved.find((n) => n.userID === U.headA);
+        expect(headsNotice?.href).toBe(`/cca/${CCA_A}/proposals/${a.id}`);
+        expect(headsNotice?.body).toContain("Go ahead");
 
         const b = await stage("in_review");
         await as(U.dirA).return({ ...b, reason: "Add the venue" });
@@ -960,17 +1098,89 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           (n) => n.kind === "proposal.returned",
         );
         expect(returned.map((n) => n.userID).sort()).toEqual(
-          [U.headA, U.headA2, U.dirHead].sort(),
+          [U.headA, U.headA2, U.dirHead, U.dirA2].sort(),
         );
-        expect(returned[0]?.body).toContain("Add the venue");
+        expect(returned.find((n) => n.userID === U.headA)?.body).toContain(
+          "Add the venue",
+        );
 
         const c = await stage("cleared");
         await as(U.dirA).finish(c);
         const finished = (await noticesOf(c.id)).filter(
           (n) => n.kind === "proposal.finished",
         );
-        expect(finished).toHaveLength(3);
+        // headA, headA2 and dirHead (a head), plus the other director dirA2.
+        expect(finished.map((n) => n.userID).sort()).toEqual(
+          [U.headA, U.headA2, U.dirHead, U.dirA2].sort(),
+        );
       });
+
+      it("the other directors hear the outcome, the actor does not, and the private note stays out", async () => {
+        const a = await stage("in_review");
+        await db.notification.deleteMany({ where: {} });
+        await as(U.dirA).approve({ ...a, note: "Private word for the head" });
+        const heard = await noticesOf(a.id);
+        const coDirectors = heard.filter((n) => n.userID === U.dirA2);
+        expect(coDirectors).toHaveLength(1);
+        expect(coDirectors[0]).toMatchObject({
+          kind: "proposal.approved",
+          href: `/director/proposals/${a.id}`,
+        });
+        expect(coDirectors[0]?.body).not.toContain("Private word");
+        expect(coDirectors[0]?.href).not.toMatch(/^\/cca/);
+        expect(heard.map((n) => n.userID)).not.toContain(U.dirA);
+        // A person who is head AND director hears once, with the head's notice.
+        const both = heard.filter((n) => n.userID === U.dirHead);
+        expect(both).toHaveLength(1);
+        expect(both[0]?.href).toBe(`/cca/${CCA_A}/proposals/${a.id}`);
+        expect(both[0]?.body).toContain("Private word");
+        // A director of another CCA hears nothing.
+        expect(heard.map((n) => n.userID)).not.toContain(U.dirB);
+
+        // A self-approving director/head still tells the other directors.
+        const b = await stage("in_review", U.dirHead);
+        await as(U.dirHead).approve(b);
+        const mine = (await noticesOf(b.id)).filter(
+          (n) => n.kind === "proposal.approved",
+        );
+        expect(mine.map((n) => n.userID)).not.toContain(U.dirHead);
+        expect(mine.map((n) => n.userID)).toContain(U.dirA);
+        expect(mine.map((n) => n.userID)).toContain(U.dirA2);
+
+        const c = await stage("in_review");
+        await as(U.dirA).return({ ...c, reason: "Private reason" });
+        const back = (await noticesOf(c.id)).filter(
+          (n) => n.kind === "proposal.returned" && n.userID === U.dirA2,
+        );
+        expect(back).toHaveLength(1);
+        expect(back[0]?.body).not.toContain("Private reason");
+      });
+
+      it.each(ACTIONS)(
+        "%s rolls back when the directors to tell cannot be read",
+        async (action) => {
+          const p = await stageFor(action);
+          const before = await snapshot(p.id);
+          const log = captureErrors();
+          const answer = await errorOf(
+            act(
+              as(U.dirA, EVERYTHING, withFailingTxRead("jcrcPositionCca")),
+              action,
+              p,
+            ),
+          );
+          const text = log.text();
+          log.restore();
+          expect(answer).toBe(CHECK_FAILED);
+          expect(text).not.toContain("db down");
+          // The hourly budget is spent before the move, so ignore the counter.
+          expect({ ...(await snapshot(p.id)), counters: 0 }).toEqual({
+            ...before,
+            counters: 0,
+          });
+          expect(await errorOf(act(as(U.dirA), action, p))).toBe("ok");
+        },
+      );
 
       it("the notice to a director points at the director's route, never at /cca", async () => {
         const made = await as(U.headA).create(draftInput());
@@ -993,7 +1203,8 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           const answer = await errorOf(
             act(as(U.dirA, EVERYTHING, withFailingNotices()), action, p),
           );
-          expect(answer).not.toBe("ok");
+          expect(answer).toMatch(/^INTERNAL_SERVER_ERROR:/);
+          expect(answer).not.toContain("boom");
           const after = await snapshot(p.id);
           expect({ ...after, counters: 0 }).toEqual({
             ...before,
@@ -1214,6 +1425,43 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         expect(second.nextCursor).toBeNull();
         const all = [...first.items, ...second.items].map((i) => i.id);
         expect(new Set(all).size).toBe(51);
+      });
+    });
+
+    describe("a queue cursor whose row changed", () => {
+      it("carries on past a row that has left review, and drops no other row", async () => {
+        const b1 = await stage("in_review", U.headB, CCA_B);
+        const old = Date.now() - 10 * HOUR;
+        await db.proposal.createMany({
+          data: Array.from({ length: 50 }, (_, i) => ({
+            ccaID: CCA_B,
+            createdBy: U.headB,
+            category: "pubs",
+            title: `Backlog ${i}`,
+            description: "x",
+            blastMessage: null,
+            plannedStart: null,
+            plannedEnd: null,
+            posterUrl: null,
+            docLink: null,
+            status: "in_review",
+            version: 1,
+            eventID: null,
+            submittedAt: new Date(old + i * 1000),
+          })),
+        });
+        const first = await as(U.dirB).directorQueue({});
+        expect(first.nextCursor).toBe(b1.id);
+        // The row the cursor points at is approved before "Show more".
+        await as(U.dirB).approve(b1);
+        const second = await as(U.dirB).directorQueue({
+          cursor: first.nextCursor!,
+        });
+        expect(second.items.map((i) => i.id)).not.toContain(b1.id);
+        // No row of the first page comes back, and nothing is an error.
+        const seen = new Set(first.items.map((i) => i.id));
+        for (const i of second.items) expect(seen.has(i.id)).toBe(false);
+        expect(second.nextCursor).toBeNull();
       });
     });
 

@@ -68,6 +68,13 @@ export default function DirectorProposal({
   if (enabled.isLoading || (on && detail.isLoading)) {
     return <p className="text-sm text-gray-500">Loading…</p>;
   }
+  if (enabled.isError) {
+    return (
+      <p role="alert" className="text-sm text-red-600">
+        Could not check whether proposals are switched on. Try again shortly.
+      </p>
+    );
+  }
   if (!on) {
     return (
       <p className="text-sm text-gray-500">
@@ -151,17 +158,18 @@ export default function DirectorProposal({
             ? `, submitted ${formatDateTime(toEpoch(loaded.submittedAt))}`
             : ""}
         </p>
-        {loaded.status === "cleared" && approval?.selfApproved && (
-          <p
-            role="note"
-            className="mt-2 inline-block rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-900"
-          >
-            {SELF_APPROVED_TEXT}
-            {approval.approverName
-              ? ` Approved by ${approval.approverName}.`
-              : ""}
-          </p>
-        )}
+        {(loaded.status === "cleared" || loaded.status === "finished") &&
+          approval?.selfApproved && (
+            <p
+              role="note"
+              className="mt-2 inline-block rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-900"
+            >
+              {SELF_APPROVED_TEXT}
+              {approval.approverName
+                ? ` Approved by ${approval.approverName}.`
+                : ""}
+            </p>
+          )}
       </div>
 
       <section className="space-y-3 rounded-lg border border-gray-200 bg-white p-4">

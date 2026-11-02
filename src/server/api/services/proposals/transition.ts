@@ -52,6 +52,8 @@ export type TransitionInput = {
   to: ProposalStatus;
   /** Who made the move. */
   actorID: string;
+  /** If set, the write also needs the proposal still in this CCA (the one the caller checked access for). */
+  expectedCcaID?: number;
   /** If set, the write also needs the proposal still at this content version. */
   expectedVersion?: number;
   /** Who approved (when `to` is "cleared"). */
@@ -107,6 +109,9 @@ export async function transitionProposal(
         where: {
           id: input.proposalID,
           status: input.from,
+          ...(input.expectedCcaID !== undefined && {
+            ccaID: input.expectedCcaID,
+          }),
           ...(input.expectedVersion !== undefined && {
             version: input.expectedVersion,
           }),

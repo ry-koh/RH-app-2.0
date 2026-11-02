@@ -1,10 +1,14 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 
-import { headProposalHref } from "~/lib/proposals/links";
+import { directorProposalHref, headProposalHref } from "~/lib/proposals/links";
 import { REVIEW_MOVES, type ReviewAction } from "~/lib/proposals/status";
 import { notify } from "~/server/api/services/notifications";
-import { assertProposalDirector, readSelfApproved } from "./access";
+import {
+  assertProposalDirector,
+  directorsOrRefuse,
+  readSelfApproved,
+} from "./access";
 import { PROPOSAL_NOT_FOUND } from "./drafts";
 import { assertWithinLimit } from "./limits";
 import {
@@ -29,7 +33,7 @@ import {
  *     version the director read (CONFLICT otherwise). A draft is invisible to
  *     directors, so it answers NOT_FOUND (B19);
  *  5. `transitionProposal`: one compare-and-set, the history row, the audit
- *     row and the head's notice in ONE transaction. If the notice cannot be
+ *     row and the notices to the heads and the other directors in ONE transaction. If the notice cannot be
  *     written the move is rolled back with it.
  *
  * Not used, on purpose: getUserRoles, the session's roles, myPositionCcas, the
@@ -54,21 +58,24 @@ type Extras = {
 
 const NOTICE: Record<
   ReviewAction,
-  { kind: string; title: string; withNote: boolean }
+  { kind: string; title: string; directorTitle: string; withNote: boolean }
 > = {
   approve: {
     kind: "proposal.approved",
     title: "Your proposal was approved",
+    directorTitle: "A proposal was approved",
     withNote: true,
   },
   return: {
     kind: "proposal.returned",
     title: "Your proposal was returned to you",
+    directorTitle: "A proposal was returned to its head",
     withNote: true,
   },
   finish: {
     kind: "proposal.finished",
     title: "Your proposal was marked finished",
+    directorTitle: "A proposal was marked finished",
     withNote: false,
   },
 };
@@ -108,6 +115,7 @@ async function reviewMove(
       to: move.to,
       actorID: userID,
       expectedVersion: input.version,
+      expectedCcaID: row.ccaID,
       note: extras.note,
       ...(action === "approve" && { approverID: userID }),
     },
@@ -116,32 +124,45 @@ async function reviewMove(
         selfApproved: (tx, proposal) => readSelfApproved(tx, userID, proposal),
       }),
       inTransaction: (tx, proposal) =>
-        noticeToHeads(tx, action, proposal, userID, extras.note),
+        noticeOfOutcome(tx, action, proposal, userID, extras.note),
     },
   );
   return { id: moved.id, version: moved.version, status: move.to };
 }
 
 /**
- * Tell the CCA's heads, except the person who just acted (they know). Written
- * on the transaction client. Recipients come from CcaHead rows, never from the
- * request. The note or reason goes in the notice body; it is the head's own
- * proposal and the head is who it is for.
+ * Tell the CCA's heads and its other directors, except the person who just
+ * acted (they know). Written on the transaction client; recipients come from
+ * CcaHead rows and the strict guard, never from the request. A read that
+ * fails rolls the move back with it.
+ *
+ * Heads get the note or reason in the body: it is their own proposal. Other
+ * directors get the title alone and a link to the director's route (the /cca
+ * routes admit heads only): the note is private to the head and the actor.
+ * Someone who is both head and director gets the head's notice, once.
  */
-async function noticeToHeads(
+async function noticeOfOutcome(
   tx: Prisma.TransactionClient,
   action: ReviewAction,
   proposal: TransitionedProposal,
   actorID: string,
   note: string | null,
 ): Promise<void> {
-  const heads = await tx.ccaHead.findMany({
-    where: { ccaID: proposal.ccaID },
-    select: { userID: true },
-  });
+  const heads = (
+    await tx.ccaHead.findMany({
+      where: { ccaID: proposal.ccaID },
+      select: { userID: true },
+    })
+  )
+    .map((h) => h.userID)
+    .filter((id) => id !== actorID);
+  const headSet = new Set(heads);
+  const directors = (await directorsOrRefuse(tx, proposal.ccaID)).filter(
+    (id) => id !== actorID && !headSet.has(id),
+  );
   const spec = NOTICE[action];
   await notify(tx, {
-    recipients: heads.map((h) => h.userID).filter((id) => id !== actorID),
+    recipients: heads,
     kind: spec.kind,
     title: spec.title,
     body:
@@ -149,6 +170,13 @@ async function noticeToHeads(
         ? `${proposal.title}: ${note}`.slice(0, 1000)
         : proposal.title,
     href: headProposalHref(proposal.ccaID, proposal.id),
+  });
+  await notify(tx, {
+    recipients: directors,
+    kind: spec.kind,
+    title: spec.directorTitle,
+    body: proposal.title,
+    href: directorProposalHref(proposal.id),
   });
 }
 

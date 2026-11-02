@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 
 import {
+  currentDirectorIDs,
   directedCcaIDs,
   isDirectorOf,
   NOT_DIRECTOR,
@@ -181,6 +182,22 @@ export async function directedCcasOrRefuse(
 ): Promise<number[]> {
   try {
     return await directedCcaIDs(db, userID);
+  } catch (err) {
+    return refuseOnFailure(err);
+  }
+}
+
+/**
+ * Everyone who directs this CCA now (possibly nobody), by the strict guard,
+ * for the outcome notices. Run on the move's transaction client, so a read
+ * that throws refuses, logs the error name only and rolls the move back.
+ */
+export async function directorsOrRefuse(
+  db: Parameters<typeof currentDirectorIDs>[0],
+  ccaID: number,
+): Promise<string[]> {
+  try {
+    return await currentDirectorIDs(db, ccaID);
   } catch (err) {
     return refuseOnFailure(err);
   }
