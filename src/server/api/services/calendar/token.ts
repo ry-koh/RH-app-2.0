@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 
+import { canonicalUserID } from "~/lib/identity";
 import { rateLimit } from "~/lib/rateLimit";
 
 /**
@@ -54,6 +55,10 @@ export async function assertFeedWithinLimit(
 }
 
 type TokenDb = Pick<PrismaClient, "calendarFeedToken">;
+type OwnerDb = Pick<
+  PrismaClient,
+  "calendarFeedToken" | "user" | "credentialRevocation"
+>;
 
 /** Make this person's token. Refuses if they already have one. */
 export async function createFeedToken(
@@ -115,14 +120,54 @@ export async function feedTokenStatus(
     : { hasToken: false, since: null };
 }
 
-/** Whose feed this token opens, or null for any token that opens none. */
+/**
+ * Whose feed this token opens, or null for any token that opens none. A token
+ * opens nothing once its owner could no longer sign in:
+ *  - the account is gone, or its email no longer resolves to the NUSNET id the
+ *    token was made for (the same "eligible" rule as trpc.ts: a person with no
+ *    canonical id has no standing);
+ *  - the owner's credentials changed after the link was made. A password reset
+ *    writes `CredentialRevocation.changedAt`; a link made before it (or last
+ *    rotated before it) is refused, so a link made from a stolen session does
+ *    not outlive the reset. Compared in whole seconds with `<`, as auth.ts
+ *    does, so a link made in the same second as the reset survives. This reads
+ *    the one watermark every credential change writes, so it covers every
+ *    path with no per-path deletion to forget.
+ * A read that fails THROWS (the caller answers 503); nothing is served on a
+ * guess.
+ */
 export async function ownerOfFeedToken(
-  db: TokenDb,
+  db: OwnerDb,
   token: string,
 ): Promise<string | null> {
   const row = await db.calendarFeedToken.findUnique({
     where: { tokenHash: hashFeedToken(token) },
-    select: { userID: true },
+    select: { userID: true, createdAt: true, rotatedAt: true },
   });
-  return row?.userID ?? null;
+  if (!row) return null;
+  const user = await db.user.findFirst({
+    where: { userID: row.userID },
+    select: { id: true, email: true },
+  });
+  if (!user || canonicalUserID(user.email) !== row.userID) return null;
+  const revoked = await db.credentialRevocation.findUnique({
+    where: { userId: user.id },
+    select: { changedAt: true },
+  });
+  if (revoked) {
+    const issued = (row.rotatedAt ?? row.createdAt).getTime();
+    if (
+      Math.floor(issued / 1000) < Math.floor(revoked.changedAt.getTime() / 1000)
+    ) {
+      return null;
+    }
+  }
+  return row.userID;
 }
+
+/** Per-address and per-owner budgets for the feed route, per hour. */
+export const FEED_FETCH_WINDOW_MS = 60 * 60 * 1000;
+/** A hall shares addresses; this only caps guessing and runaway loops. */
+export const FEED_FETCH_IP_LIMIT = 600;
+/** Calendar apps poll every 15 minutes to a few hours; 60 leaves room for hand refreshes. */
+export const FEED_FETCH_OWNER_LIMIT = 60;

@@ -1,3 +1,4 @@
+import type * as RateLimit from "~/lib/rateLimit";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,18 +9,38 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * written to a log. What a feed holds for each kind of reader is covered
  * against the real database in calendarFeed.int.test.ts.
  */
+type RateLimitModule = typeof RateLimit;
+
 const h = vi.hoisted(() => ({
   flags: {} as Record<string, string>,
   owner: null as string | null,
   tokenReadFails: false,
   eventReadFails: false,
   lookups: [] as unknown[],
+  userEmail: "e0000001@u.nus.edu" as string | null,
+  changedAt: null as Date | null,
+  limits: [] as string[],
+  limitDeny: null as string | null,
+  limitThrows: false,
+  userReadFails: false,
+  flagReads: 0,
+}));
+
+vi.mock("~/lib/rateLimit", async (orig) => ({
+  ...(await orig<RateLimitModule>()),
+  rateLimit: vi.fn((key: string) => {
+    h.limits.push(key);
+    if (h.limitThrows) return Promise.reject(new Error("db down"));
+    const denied = h.limitDeny !== null && key.startsWith(h.limitDeny);
+    return Promise.resolve({ allowed: !denied, retryAfter: denied ? 120 : 0 });
+  }),
 }));
 
 vi.mock("~/server/db", () => ({
   db: {
     systemFlag: {
       findUnique: vi.fn(({ where }: { where: { key: string } }) => {
+        h.flagReads += 1;
         const v = h.flags[where.key];
         if (v === "throws") return Promise.reject(new Error("db down"));
         return Promise.resolve(v === undefined ? null : { value: v });
@@ -29,8 +50,30 @@ vi.mock("~/server/db", () => ({
       findUnique: vi.fn((args: unknown) => {
         h.lookups.push(args);
         if (h.tokenReadFails) return Promise.reject(new Error("db down"));
-        return Promise.resolve(h.owner ? { userID: h.owner } : null);
+        return Promise.resolve(
+          h.owner
+            ? {
+                userID: h.owner,
+                createdAt: new Date("2026-10-01T00:00:00Z"),
+                rotatedAt: null,
+              }
+            : null,
+        );
       }),
+    },
+    user: {
+      findFirst: vi.fn(() =>
+        h.userReadFails
+          ? Promise.reject(new Error("db down"))
+          : Promise.resolve(
+              h.userEmail ? { id: "u1", email: h.userEmail } : null,
+            ),
+      ),
+    },
+    credentialRevocation: {
+      findUnique: vi.fn(() =>
+        Promise.resolve(h.changedAt ? { changedAt: h.changedAt } : null),
+      ),
     },
     event: {
       findMany: vi.fn(() => {
@@ -57,6 +100,7 @@ import { GET } from "../route";
 import { resetEventsFlagCache } from "~/server/api/services/events";
 
 const TOKEN = "T0kenT0kenT0kenT0kenT0kenT0kenT0kenT0kenXYZ";
+const OWNER_SELECT = { userID: true, createdAt: true, rotatedAt: true };
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const get = (segment: string) =>
   GET(new Request(`http://localhost/api/calendar/feed/${segment}`), {
@@ -71,6 +115,13 @@ beforeEach(() => {
   h.tokenReadFails = false;
   h.eventReadFails = false;
   h.lookups = [];
+  h.userEmail = "e0000001@u.nus.edu";
+  h.changedAt = null;
+  h.limits = [];
+  h.limitDeny = null;
+  h.limitThrows = false;
+  h.userReadFails = false;
+  h.flagReads = 0;
   logged = [];
   for (const m of ["log", "info", "warn", "error", "debug"] as const) {
     vi.spyOn(console, m).mockImplementation((...a: unknown[]) => {
@@ -101,8 +152,8 @@ describe("GET /api/calendar/feed/[token]", () => {
     await get(TOKEN);
 
     expect(h.lookups).toEqual([
-      { where: { tokenHash: sha(TOKEN) }, select: { userID: true } },
-      { where: { tokenHash: sha(TOKEN) }, select: { userID: true } },
+      { where: { tokenHash: sha(TOKEN) }, select: OWNER_SELECT },
+      { where: { tokenHash: sha(TOKEN) }, select: OWNER_SELECT },
     ]);
     expect(JSON.stringify(h.lookups)).not.toContain(TOKEN);
   });
@@ -133,7 +184,7 @@ describe("GET /api/calendar/feed/[token]", () => {
       bodies.add(await res.text());
     }
     expect(bodies.size).toBe(1);
-    // Every one of them cost the same single indexed read.
+    // Every one of them cost the same single indexed read, and nothing more.
     expect(h.lookups).toHaveLength(5);
   });
 
@@ -143,7 +194,7 @@ describe("GET /api/calendar/feed/[token]", () => {
     await get(long);
     expect(h.lookups[0]).toEqual({
       where: { tokenHash: sha("a".repeat(256)) },
-      select: { userID: true },
+      select: OWNER_SELECT,
     });
   });
 
@@ -152,6 +203,70 @@ describe("GET /api/calendar/feed/[token]", () => {
     expect((await get(TOKEN)).status).toBe(503);
     h.tokenReadFails = false;
     h.eventReadFails = true;
+    expect((await get(TOKEN)).status).toBe(503);
+  });
+
+  it("is 429 per address before anything is read, with no detail", async () => {
+    h.limitDeny = "calendar.feed.ip:";
+
+    const res = await get(TOKEN);
+
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("120");
+    expect((await res.text()).trim()).toBe("Too many requests");
+    expect(h.flagReads).toBe(0);
+    expect(h.lookups).toEqual([]);
+  });
+
+  it("is 429 per owner once the token names one, before any calendar read", async () => {
+    h.limitDeny = "calendar.feed.owner:";
+
+    const res = await get(TOKEN);
+
+    expect(res.status).toBe(429);
+    expect((await res.text()).trim()).toBe("Too many requests");
+    expect(h.limits).toEqual([
+      expect.stringMatching(/^calendar\.feed\.ip:/),
+      "calendar.feed.owner:E0000001",
+    ]);
+  });
+
+  it("an unknown token spends only the address budget, never an owner's", async () => {
+    h.owner = null;
+    await get(TOKEN);
+    expect(h.limits).toHaveLength(1);
+    expect(h.limits[0]).toMatch(/^calendar\.feed\.ip:/);
+  });
+
+  it("a limiter that fails refuses with 503 (it does not open), on either budget", async () => {
+    h.limitThrows = true;
+    expect((await get(TOKEN)).status).toBe(503);
+    expect(h.lookups).toEqual([]);
+  });
+
+  it("is 401 when the owner has no account, or no NUS identity, any more", async () => {
+    h.userEmail = null;
+    expect((await get(TOKEN)).status).toBe(401);
+    h.userEmail = "someone@gmail.com";
+    expect((await get(TOKEN)).status).toBe(401);
+    h.userEmail = "e0000002@u.nus.edu";
+    expect((await get(TOKEN)).status).toBe(401);
+    h.userEmail = "E0000001@U.NUS.EDU";
+    expect((await get(TOKEN)).status).toBe(200);
+  });
+
+  it("is 401 for a link made before the owner's last credential change, 200 for one made after", async () => {
+    h.changedAt = new Date("2026-10-02T00:00:00Z");
+    expect((await get(TOKEN)).status).toBe(401);
+    h.changedAt = new Date("2026-09-30T00:00:00Z");
+    expect((await get(TOKEN)).status).toBe(200);
+    // Same second as the reset: kept, as auth.ts keeps a same-second sign-in.
+    h.changedAt = new Date("2026-10-01T00:00:00.900Z");
+    expect((await get(TOKEN)).status).toBe(200);
+  });
+
+  it("is 503 when the account or revocation read fails", async () => {
+    h.userReadFails = true;
     expect((await get(TOKEN)).status).toBe(503);
   });
 

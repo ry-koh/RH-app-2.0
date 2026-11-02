@@ -27,6 +27,20 @@ import { PUBLISHED_EVENTS_WHERE } from "~/server/api/services/events";
 /** A hard ceiling on one read, whatever the window. */
 export const CALENDAR_ROW_MAX = 1000;
 
+/** A read that hit the ceiling was cut short: say so, with the count. */
+function warnIfCapped(layer: string, count: number): void {
+  if (count >= CALENDAR_ROW_MAX) {
+    console.warn(
+      JSON.stringify({
+        evt: "calendar_row_cap_hit",
+        layer,
+        count,
+        cap: CALENDAR_ROW_MAX,
+      }),
+    );
+  }
+}
+
 export type CalendarEventItem = {
   eventID: number;
   ccaID: number | null;
@@ -88,6 +102,7 @@ export async function readPublishedEvents(
       updatedAt: true,
     },
   });
+  warnIfCapped("events", rows.length);
   const names = await ccaNames(
     db,
     rows.flatMap((r) => (r.ccaID == null ? [] : [r.ccaID])),
@@ -168,6 +183,7 @@ export async function readProposalLayer(
     },
   });
 
+  warnIfCapped("proposals", rows.length);
   // Hide a proposal whose Event has gone live or been canceled. The Event is
   // looked up by id, not by the window: it may have moved to another month.
   const linked = [

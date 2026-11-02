@@ -1,8 +1,14 @@
 import { db } from "~/server/db";
+import { clientIp, rateLimit } from "~/lib/rateLimit";
 import {
   buildFeed,
   tokenFromSegment,
 } from "~/server/api/services/calendar/feed";
+import {
+  FEED_FETCH_IP_LIMIT,
+  FEED_FETCH_OWNER_LIMIT,
+  FEED_FETCH_WINDOW_MS,
+} from "~/server/api/services/calendar/token";
 
 /**
  * The personal calendar feed, `/api/calendar/feed/<token>.ics`. A calendar app
@@ -15,8 +21,11 @@ import {
  *    `private, no-store` so no shared cache keeps a person's calendar.
  *  - The token is never logged here or in the service: no request URL, no
  *    header and no parameter is written anywhere. A failure logs its kind.
- *  - Refusals carry no detail: 401 for any token that opens nothing, 503 when
- *    the feed is off or a read failed.
+ *  - Refusals carry no detail: 401 for any token that opens nothing, 429 when
+ *    a budget is spent, 503 when the feed is off, a read failed or the rate
+ *    limiter itself failed (it refuses rather than opening).
+ *  - Two budgets per hour: per address before anything is read, and per owner
+ *    once the token names one.
  *  - There is no sign-in check and no middleware to allow-list: the app has
  *    none, and this route does not read the session.
  */
@@ -30,14 +39,56 @@ const HEADERS = {
 } as const;
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: { token: string } },
 ): Promise<Response> {
-  const result = await buildFeed(db, tokenFromSegment(params.token));
+  const refuse = (status: 429 | 503, retryAfter?: number) =>
+    new Response(
+      status === 429 ? "Too many requests\n" : "Service unavailable\n",
+      {
+        status,
+        headers: {
+          ...HEADERS,
+          "Content-Type": "text/plain; charset=utf-8",
+          ...(retryAfter ? { "Retry-After": String(retryAfter) } : {}),
+        },
+      },
+    );
+  try {
+    const ip = await rateLimit(
+      `calendar.feed.ip:${clientIp(request)}`,
+      FEED_FETCH_IP_LIMIT,
+      FEED_FETCH_WINDOW_MS,
+    );
+    if (!ip.allowed) return refuse(429, ip.retryAfter);
+  } catch {
+    return refuse(503);
+  }
+  let ownerRetry = 0;
+  const result = await buildFeed(
+    db,
+    tokenFromSegment(params.token),
+    new Date(),
+    async (userID) => {
+      const owner = await rateLimit(
+        `calendar.feed.owner:${userID}`,
+        FEED_FETCH_OWNER_LIMIT,
+        FEED_FETCH_WINDOW_MS,
+      );
+      ownerRetry = owner.retryAfter;
+      return owner.allowed;
+    },
+  );
   if (result.status !== 200) {
     return new Response(result.body, {
       status: result.status,
-      headers: { ...HEADERS, "Content-Type": "text/plain; charset=utf-8" },
+      headers: {
+        ...HEADERS,
+        "Content-Type": "text/plain; charset=utf-8",
+        ...(result.status === 429 && ownerRetry
+          ? { "Retry-After": String(ownerRetry) }
+          : {}),
+      },
     });
   }
   return new Response(result.body, {

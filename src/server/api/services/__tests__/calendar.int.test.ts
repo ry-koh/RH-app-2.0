@@ -138,8 +138,24 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           OR: [{ actorUserID: { in: IDS } }, { targetUserID: { in: IDS } }],
         },
       });
+      const accounts = await db.user.findMany({
+        where: { email: { startsWith: "e99909" } },
+        select: { id: true },
+      });
+      await db.credentialRevocation.deleteMany({
+        where: { userId: { in: accounts.map((a) => a.id) } },
+      });
       await db.user.deleteMany({ where: { email: { startsWith: "e99909" } } });
     };
+
+    /** A signed-up account for each test person (the feed checks it exists). */
+    const makeAccounts = () =>
+      db.user.createMany({
+        data: IDS.map((userID) => ({
+          userID,
+          email: `${userID.toLowerCase()}@u.nus.edu`,
+        })),
+      });
 
     const setRoles = (userID: string, roles: string[]) =>
       db.userRole.upsert({
@@ -286,6 +302,7 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
 
     beforeEach(async () => {
       await clean();
+      await makeAccounts();
       for (const key of FLAGS) await setFlag(key, "on");
       for (const id of [U.dirA, U.dirHead]) {
         await setRoles(id, ["resident", "jcrc"]);
@@ -413,8 +430,8 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         const { loadAdminUserTarget, deleteUserAccountCascade } = await import(
           "~/server/api/services/userAdmin"
         );
-        const user = await db.user.create({
-          data: { email: "e9990905@u.nus.edu", userID: U.resident },
+        const user = await db.user.findFirstOrThrow({
+          where: { userID: U.resident },
         });
         const gone = await tokenFor(U.resident);
         const kept = await tokenFor(U.other);
@@ -425,6 +442,119 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         expect(result.deleted).toMatchObject({ calendarFeedToken: 1 });
         expect((await buildFeed(db, gone)).status).toBe(401);
         expect((await buildFeed(db, kept)).status).toBe(200);
+      });
+    });
+
+    describe("the owner's standing", () => {
+      it("a password reset kills a link made before it, and a link made after works", async () => {
+        const before = await tokenFor(U.resident);
+        const account = await db.user.findFirstOrThrow({
+          where: { userID: U.resident },
+        });
+        // What reset-password/route.ts writes.
+        await db.credentialRevocation.upsert({
+          where: { userId: account.id },
+          create: {
+            userId: account.id,
+            changedAt: new Date(Date.now() + 5000),
+            reason: "password_reset",
+          },
+          update: { changedAt: new Date(Date.now() + 5000) },
+        });
+
+        expect((await buildFeed(db, before)).status).toBe(401);
+
+        // A link made after the reset (the clock moved past it) works.
+        await db.credentialRevocation.update({
+          where: { userId: account.id },
+          data: { changedAt: new Date(Date.now() - 5000) },
+        });
+        await as(U.resident).feedRevoke();
+        expect((await buildFeed(db, await tokenFor(U.resident))).status).toBe(
+          200,
+        );
+      });
+
+      it("rotating before the reset does not help; rotating after does", async () => {
+        const account = await db.user.findFirstOrThrow({
+          where: { userID: U.resident },
+        });
+        await tokenFor(U.resident);
+        await as(U.resident).feedRotate();
+        await db.credentialRevocation.create({
+          data: {
+            userId: account.id,
+            changedAt: new Date(Date.now() + 5000),
+            reason: "password_reset",
+          },
+        });
+        const rotatedBefore = await db.calendarFeedToken.findFirstOrThrow({
+          where: { userID: U.resident },
+        });
+        expect(rotatedBefore.rotatedAt).not.toBeNull();
+        // The rotated link was made before the reset: refused.
+        await db.calendarFeedToken.update({
+          where: { id: rotatedBefore.id },
+          data: { tokenHash: sha("known-token") },
+        });
+        expect((await buildFeed(db, "known-token")).status).toBe(401);
+      });
+
+      it("a reset of one person leaves everyone else's link alone", async () => {
+        const mine = await tokenFor(U.resident);
+        const theirs = await tokenFor(U.other);
+        const account = await db.user.findFirstOrThrow({
+          where: { userID: U.resident },
+        });
+        await db.credentialRevocation.create({
+          data: {
+            userId: account.id,
+            changedAt: new Date(Date.now() + 5000),
+            reason: "password_reset",
+          },
+        });
+
+        expect((await buildFeed(db, mine)).status).toBe(401);
+        expect((await buildFeed(db, theirs)).status).toBe(200);
+      });
+
+      it("an owner with no account, or no NUS identity, gets 401", async () => {
+        const token = await tokenFor(U.resident);
+        const account = await db.user.findFirstOrThrow({
+          where: { userID: U.resident },
+        });
+
+        await db.user.update({
+          where: { id: account.id },
+          data: { email: "someone@gmail.com" },
+        });
+        expect((await buildFeed(db, token)).status).toBe(401);
+
+        await db.user.delete({ where: { id: account.id } });
+        expect((await buildFeed(db, token)).status).toBe(401);
+      });
+
+      it("a failed account read is 503, never a served feed", async () => {
+        const token = await tokenFor(U.resident);
+
+        expect((await buildFeed(withFailingTable("user"), token)).status).toBe(
+          503,
+        );
+        expect(
+          (await buildFeed(withFailingTable("credentialRevocation"), token))
+            .status,
+        ).toBe(503);
+      });
+
+      it("a spent owner budget is 429 and reads no calendar", async () => {
+        const token = await tokenFor(U.resident);
+
+        const res = await buildFeed(db, token, new Date(), () =>
+          Promise.resolve(false),
+        );
+
+        expect(res.status).toBe(429);
+        expect(res.body.trim()).toBe("Too many requests");
       });
     });
 

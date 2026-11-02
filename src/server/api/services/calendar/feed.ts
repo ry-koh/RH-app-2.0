@@ -23,8 +23,9 @@ import {
  *  - the flag first. Off, absent or unreadable is 503 and nothing else is
  *    read, so a switched-off feed says nothing about tokens;
  *  - the token next. A token that opens nothing (unknown, revoked, malformed,
- *    too long) is one answer, 401, after the same hash and the same single
- *    indexed read as a good one;
+ *    too long, or its owner's account gone or credentials changed since) is
+ *    one answer, 401. The first read is the same hash and the same single
+ *    indexed read for every input;
  *  - then the two layers. Published Events (while `events.enabled` is on),
  *    and the proposal layer only if THIS person may read proposals now, by
  *    the strict reads the proposal screens use. A person who lost the head or
@@ -44,11 +45,16 @@ const DAY_SEC = 86_400;
 
 export type FeedResult =
   | { status: 200; body: string }
-  | { status: 401 | 503; body: string };
+  | { status: 401 | 429 | 503; body: string };
 
-const refusal = (status: 401 | 503): FeedResult => ({
+const BODIES = {
+  401: "Unauthorized\n",
+  429: "Too many requests\n",
+  503: "Service unavailable\n",
+} as const;
+const refusal = (status: 401 | 429 | 503): FeedResult => ({
   status,
-  body: status === 401 ? "Unauthorized\n" : "Service unavailable\n",
+  body: BODIES[status],
 });
 
 /** Logs the kind of failure only: a driver message can carry stored values. */
@@ -95,10 +101,16 @@ export function proposalEntry(p: ProposalLayerItem): IcsEntry {
   };
 }
 
+/**
+ * `spend` is called once the token has named its owner, before any calendar
+ * read: it returns whether this owner may fetch now, and a throw is a 503
+ * (a limiter that cannot count refuses, as in lib/rateLimit.ts).
+ */
 export async function buildFeed(
   db: PrismaClient,
   token: string,
   now: Date = new Date(),
+  spend?: (userID: string) => Promise<boolean>,
 ): Promise<FeedResult> {
   if (!(await isCalendarFeedEnabled(db))) return refusal(503);
 
@@ -110,6 +122,14 @@ export async function buildFeed(
     return refusal(503);
   }
   if (userID === null) return refusal(401);
+  if (spend) {
+    try {
+      if (!(await spend(userID))) return refusal(429);
+    } catch (err) {
+      logFailure("limit", err);
+      return refusal(503);
+    }
+  }
 
   const nowSec = Math.floor(now.getTime() / 1000);
   const from = nowSec - FEED_PAST_DAYS * DAY_SEC;
