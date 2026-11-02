@@ -340,11 +340,14 @@ describe("the Event link is made once, after the approval, and never fails it", 
     // The expected value is the one read, and a missing key counts as null.
     expect(c).toMatch(/isSet: false/);
     expect(body).toMatch(/\.\.\.eventIDIs\(expected\)/);
-    // Only an approved proposal can be linked.
-    expect(body).toMatch(/status: "cleared"/);
+    // Only an approved proposal can be linked: the caller names which statuses.
+    expect(body).toMatch(/status: \{ in: statuses \}/);
+    expect(c).toMatch(/draftEventAfterApproval[\s\S]*?\[\s*"cleared",?\s*\]/);
     // The link write is not a content edit and not a status move.
     const data = body.slice(body.indexOf("data:"));
-    expect(data.slice(0, data.indexOf("}") + 1)).toBe("data: { eventID }");
+    expect(data.slice(0, data.indexOf("}") + 1)).toBe(
+      "data: { eventID, eventClaimedAt: new Date() }",
+    );
   });
 
   it("the automatic step wraps its whole body in one try and reads the flag first", () => {
@@ -358,8 +361,8 @@ describe("the Event link is made once, after the approval, and never fails it", 
       body.indexOf("linkAndCreate("),
     );
     expect(body).not.toMatch(/\bthrow\b/);
-    // The only other catch is the best-effort notice.
-    expect(c.match(/\bcatch\b/g)).toHaveLength(2);
+    // The only other catches are the two best-effort notices.
+    expect(c.match(/\bcatch\b/g)).toHaveLength(3);
   });
 
   it("the button checks the flag, then the head, then spends budget, then links", () => {

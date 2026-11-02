@@ -348,9 +348,21 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       return { id: made.id, version: done.version };
     };
 
+    /** A proposal sent for review, ready for the director's approve call. */
+    const submitted = async (willBeEvent: boolean) => {
+      const s = await stage({ willBeEvent, to: "in_review" });
+      return { id: s.id, version: s.version };
+    };
+
     const eventsOf = () =>
       db.event.findMany({
         where: { OR: [{ ccaID: { in: CCAS } }, { createdBy: { in: IDS } }] },
+      });
+    /** Make a claim look old: past the window, so it counts as a failed create. */
+    const ageClaim = (id: string) =>
+      db.proposal.update({
+        where: { id },
+        data: { eventClaimedAt: new Date(Date.now() - 3 * 60_000) },
       });
     const rowOf = (id: string) =>
       db.proposal.findUniqueOrThrow({ where: { id } });
@@ -631,9 +643,21 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         const dangling = (await rowOf(stored.id)).eventID;
         expect(dangling).not.toBeNull();
 
+        // Within the window it reads as being made, and the button writes nothing.
+        const fresh = await as(U.headA).get({ id: stored.id });
+        expect(fresh.eventBeingMade).toBe(true);
+        expect(fresh.eventMissing).toBe(false);
+        expect(fresh.canCreateEvent).toBe(false);
+        expect(await errorOf(as(U.headA).createEvent({ id: stored.id }))).toBe(
+          "CONFLICT:EVENT_BEING_MADE",
+        );
+        expect((await rowOf(stored.id)).eventID).toBe(dangling);
+        await ageClaim(stored.id);
+
         const seen = await as(U.headA).get({ id: stored.id });
         expect(seen.event).toBeNull();
         expect(seen.eventMissing).toBe(true);
+        expect(seen.eventBeingMade).toBe(false);
         expect(seen.canCreateEvent).toBe(true);
 
         const fixed = await as(U.headA).createEvent({ id: stored.id });
@@ -665,7 +689,8 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         expect(log).not.toContain("boom");
         expect(await draftNotices()).toHaveLength(0);
 
-        // The button recovers it.
+        // The button recovers it once the claim is past the window.
+        await ageClaim(stored.id);
         const fixed = await as(U.headA).createEvent({ id: stored.id });
         expect(fixed.created).toBe(true);
         expect(await eventsOf()).toHaveLength(1);
@@ -707,6 +732,214 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       });
     });
 
+    describe("a claim between the claim and the create (A33)", () => {
+      /** A database whose Event create waits for `release`, and says when reached. */
+      const slowCreate = () => {
+        let release!: () => void;
+        let reached!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        const arrived = new Promise<void>((r) => (reached = r));
+        const client = proxied(db, (prop) =>
+          prop === "event"
+            ? delegateWith("event", {
+                create: async (args: never) => {
+                  reached();
+                  await gate;
+                  return db.event.create(args);
+                },
+              })
+            : undefined,
+        );
+        return { client, release, arrived };
+      };
+
+      it("a second press during the first create writes nothing and leaves one linked Event", async () => {
+        const stored = await stage({ willBeEvent: false });
+        const slow = slowCreate();
+        const first = link.createEventFromProposal(
+          slow.client,
+          U.headA,
+          stored.id,
+        );
+        await slow.arrived; // claimed, not yet created
+        const claimed = (await rowOf(stored.id)).eventID;
+        expect(claimed).not.toBeNull();
+        const during = await errorOf(
+          as(U.headA2).createEvent({ id: stored.id }),
+        );
+        expect(during).toBe("CONFLICT:EVENT_BEING_MADE");
+        expect((await rowOf(stored.id)).eventID).toBe(claimed);
+        slow.release();
+        const made = await first;
+        expect(made.created).toBe(true);
+        const rows = await eventsOf();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.eventID).toBe(claimed);
+        expect((await rowOf(stored.id)).eventID).toBe(claimed);
+      });
+
+      it("the automatic step during a button's create also writes nothing", async () => {
+        await setFlag("events.enabled", null);
+        const stored = await stage({ willBeEvent: true });
+        await setFlag("events.enabled", "on");
+        const slow = slowCreate();
+        const first = link.createEventFromProposal(
+          slow.client,
+          U.headA,
+          stored.id,
+        );
+        await slow.arrived;
+        expect(await link.draftEventAfterApproval(db, stored.id)).toBe(
+          "in_progress",
+        );
+        slow.release();
+        await first;
+        expect(await eventsOf()).toHaveLength(1);
+      });
+
+      it("a claim past the window is recovered, and a legacy row with no claim time counts as old", async () => {
+        const stored = await stage({ willBeEvent: false });
+        await db.proposal.update({
+          where: { id: stored.id },
+          data: { eventID: 123_456_789, eventClaimedAt: new Date() },
+        });
+        expect(await errorOf(as(U.headA).createEvent({ id: stored.id }))).toBe(
+          "CONFLICT:EVENT_BEING_MADE",
+        );
+        await ageClaim(stored.id);
+        const fixed = await as(U.headA).createEvent({ id: stored.id });
+        expect(fixed.created).toBe(true);
+        expect(fixed.eventID).not.toBe(123_456_789);
+        expect(await eventsOf()).toHaveLength(1);
+
+        // Legacy: a dangling id and no claim time at all.
+        const legacy = await stage({ willBeEvent: false });
+        await db.$runCommandRaw({
+          update: "Proposal",
+          updates: [
+            {
+              q: { _id: { $oid: legacy.id } },
+              u: {
+                $set: { eventID: 123_456_788 },
+                $unset: { eventClaimedAt: "" },
+              },
+            },
+          ],
+        });
+        const seen = await as(U.headA).get({ id: legacy.id });
+        expect(seen.eventMissing).toBe(true);
+        expect(seen.eventBeingMade).toBe(false);
+        const again = await as(U.headA).createEvent({ id: legacy.id });
+        expect(again.created).toBe(true);
+        expect(await eventsOf()).toHaveLength(2);
+      });
+    });
+
+    describe("what the approval reports, and the finished state", () => {
+      it("reports created, and not_requested when the field is off", async () => {
+        const made = await as(U.dirA).approve(await submitted(true));
+        expect(made.eventDraft).toBe("created");
+        const off = await as(U.dirA).approve(await submitted(false));
+        expect(off.eventDraft).toBe("not_requested");
+      });
+
+      it("reports events_off without a draft", async () => {
+        await setFlag("events.enabled", null);
+        const r = await as(U.dirA).approve(await submitted(true));
+        expect(r.eventDraft).toBe("events_off");
+      });
+
+      it("reports failed, logs the error name, and tells the heads to press Create event", async () => {
+        const quiet = captureErrors();
+        const r = await as(
+          U.dirA,
+          EVERYTHING,
+          withFailingEventCreate(),
+        ).approve(await submitted(true));
+        const log = quiet.text();
+        quiet.restore();
+        expect(r.status).toBe("cleared");
+        expect(r.eventDraft).toBe("failed");
+        expect(log).not.toContain("boom");
+        const notices = await db.notification.findMany({
+          where: { kind: "proposal.event_draft_failed", userID: { in: IDS } },
+        });
+        expect(notices.map((n) => n.userID).sort()).toEqual(
+          [U.headA, U.headA2, U.dirHead].sort(),
+        );
+        const view = await as(U.dirA).get({ id: r.id });
+        expect(view.eventBeingMade).toBe(true);
+      });
+
+      it("reports no_owner and still notices the heads", async () => {
+        const sub = await submitted(true);
+        await db.proposal.update({
+          where: { id: sub.id },
+          data: { createdBy: null },
+        });
+        const quiet = captureErrors();
+        const r = await as(U.dirA).approve(sub);
+        quiet.restore();
+        expect(r.eventDraft).toBe("no_owner");
+        expect(
+          await db.notification.count({
+            where: { kind: "proposal.event_draft_failed", userID: U.headA },
+          }),
+        ).toBe(1);
+      });
+
+      it("a failed notice about a failed draft does not undo the approval", async () => {
+        const quiet = captureErrors();
+        const broken = proxied(db, (prop) =>
+          prop === "event"
+            ? delegateWith("event", {
+                create: () => Promise.reject(new Error("boom")),
+              })
+            : prop === "notification"
+              ? { createMany: () => Promise.reject(new Error("boom")) }
+              : undefined,
+        );
+        const r = await as(U.dirA, EVERYTHING, broken).approve(
+          await submitted(true),
+        );
+        quiet.restore();
+        expect(r.status).toBe("cleared");
+        expect(r.eventDraft).toBe("failed");
+      });
+
+      it("logs a skip, with the proposal id, when the status has moved", async () => {
+        const stored = await stage({ willBeEvent: true });
+        await as(U.dirA).finish({ id: stored.id, version: stored.version });
+        const quiet = captureErrors();
+        const outcome = await link.draftEventAfterApproval(db, stored.id);
+        const log = quiet.text();
+        quiet.restore();
+        expect(outcome).toBe("skipped");
+        expect(log).toContain("proposal_event_draft_skipped");
+        expect(log).toContain(stored.id);
+      });
+
+      it("the button works on a finished proposal; the automatic step does not", async () => {
+        await setFlag("events.enabled", null);
+        const stored = await stage({ willBeEvent: true });
+        const done = await as(U.dirA).finish({
+          id: stored.id,
+          version: stored.version,
+        });
+        expect(done.status).toBe("finished");
+        await setFlag("events.enabled", "on");
+        expect(await link.draftEventAfterApproval(db, stored.id)).toBe(
+          "skipped",
+        );
+        expect(await eventsOf()).toHaveLength(0);
+        const seen = await as(U.headA).get({ id: stored.id });
+        expect(seen.canCreateEvent).toBe(true);
+        const made = await as(U.headA).createEvent({ id: stored.id });
+        expect(made.created).toBe(true);
+        expect(await eventsOf()).toHaveLength(1);
+      });
+    });
+
     describe("deleteDraft leaves a readable proposal and a working button (A34)", () => {
       it("says the draft is gone and makes a new one", async () => {
         const stored = await stage();
@@ -719,6 +952,14 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           eventID: first,
         });
         expect(await eventsOf()).toHaveLength(0);
+        // The claim is still young, so the proposal says it is being made.
+        const young = await as(U.headA).get({ id: stored.id });
+        expect(young.eventBeingMade).toBe(true);
+        expect(await errorOf(as(U.headA).createEvent({ id: stored.id }))).toBe(
+          "CONFLICT:EVENT_BEING_MADE",
+        );
+        expect(await eventsOf()).toHaveLength(0);
+        await ageClaim(stored.id);
 
         const after = await as(U.headA).get({ id: stored.id });
         expect(after.status).toBe("cleared");

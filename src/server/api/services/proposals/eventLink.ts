@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { TRPCError } from "@trpc/server";
 
-import { headEventHref } from "~/lib/proposals/links";
+import { headEventHref, headProposalHref } from "~/lib/proposals/links";
 import {
   EVENT_DESCRIPTION_MAX,
   EVENT_PUBLIC_DESCRIPTION_MAX,
@@ -42,6 +42,30 @@ import { assertWithinLimit } from "./limits";
  */
 
 export const EVENT_NOT_APPROVED = "PROPOSAL_NOT_APPROVED";
+export const EVENT_BEING_MADE = "EVENT_BEING_MADE";
+
+/**
+ * How long a claimed `eventID` counts as "being made". It outlasts the
+ * function's time limit, so a claim older than this is a failed create, not a
+ * slow one. This adds to 4.7's written order: without it a second caller could
+ * read the first caller's claim as dangling, replace it, and leave the first
+ * caller's late create as an unlinked orphan draft (A33).
+ */
+export const EVENT_CLAIM_WINDOW_MS = 2 * 60 * 1000;
+
+/** What the automatic step did, returned to the approval's caller. */
+export type EventDraftOutcome =
+  | "created"
+  | "already_linked"
+  | "not_requested"
+  | "events_off"
+  | "in_progress"
+  | "no_owner"
+  | "skipped"
+  | "failed";
+
+const isFresh = (claimedAt: Date | null, now: number) =>
+  claimedAt !== null && now - claimedAt.getTime() < EVENT_CLAIM_WINDOW_MS;
 
 type LinkDb = PrismaClient;
 
@@ -57,6 +81,7 @@ type Source = {
   willBeEvent: boolean | null;
   status: string;
   eventID: number | null;
+  eventClaimedAt: Date | null;
 };
 
 const SOURCE_SELECT = {
@@ -71,6 +96,7 @@ const SOURCE_SELECT = {
   willBeEvent: true,
   status: true,
   eventID: true,
+  eventClaimedAt: true,
 } as const;
 
 const loadSource = (db: LinkDb, id: string): Promise<Source | null> =>
@@ -104,38 +130,51 @@ export async function readLinkedEvent(
   };
 }
 
+/** The button works on an approved proposal, including one since finished (A34). */
+const BUTTON_STATUSES = ["cleared", "finished"];
+
 export type EventLinkView = {
   willBeEvent: boolean;
   /** The Event, if it exists: its id, status and title and nothing else. */
   event: LinkedEvent | null;
   /** The proposal points at an Event that is gone. */
   eventMissing: boolean;
+  /** The proposal's Event is being made right now (a fresh claim). */
+  eventBeingMade: boolean;
   eventsEnabled: boolean;
   canCreateEvent: boolean;
 };
 
 export async function readEventLinkView(
   db: LinkDb,
-  row: Pick<Source, "willBeEvent" | "status" | "eventID">,
+  row: Pick<Source, "willBeEvent" | "status" | "eventID" | "eventClaimedAt">,
   isHead: boolean,
 ): Promise<EventLinkView> {
   const [event, eventsEnabled] = await Promise.all([
     readLinkedEvent(db, row.eventID),
     areEventsEnabled(db),
   ]);
+  const dangling = row.eventID !== null && event === null;
+  const eventBeingMade = dangling && isFresh(row.eventClaimedAt, Date.now());
   return {
     willBeEvent: row.willBeEvent === true,
     event,
-    eventMissing: row.eventID !== null && event === null,
+    eventMissing: dangling && !eventBeingMade,
+    eventBeingMade,
     eventsEnabled,
     canCreateEvent:
-      isHead && eventsEnabled && row.status === "cleared" && event === null,
+      isHead &&
+      eventsEnabled &&
+      BUTTON_STATUSES.includes(row.status) &&
+      event === null &&
+      !eventBeingMade,
   };
 }
 
 type Outcome =
   | { outcome: "created"; eventID: number }
   | { outcome: "already_linked"; eventID: number }
+  | { outcome: "in_progress" }
   | { outcome: "lost_race" };
 
 /** A missing key and a stored null do not match the same query on MongoDB. */
@@ -173,21 +212,26 @@ async function linkAndCreate(
   db: LinkDb,
   source: Source,
   ownerID: string,
+  statuses: string[],
 ): Promise<Outcome> {
   const expected = source.eventID;
   if (expected !== null) {
     const there = await readLinkedEvent(db, expected);
     if (there) return { outcome: "already_linked", eventID: expected };
+    // A claim made moments ago is a create still running, not a dangling id.
+    if (isFresh(source.eventClaimedAt, Date.now())) {
+      return { outcome: "in_progress" };
+    }
   }
   const eventID = await nextEventId(db);
   const claimed = await db.proposal.updateMany({
     where: {
       id: source.id,
       ccaID: source.ccaID,
-      status: "cleared",
+      status: { in: statuses },
       ...eventIDIs(expected),
     },
-    data: { eventID },
+    data: { eventID, eventClaimedAt: new Date() },
   });
   if (claimed.count !== 1) return { outcome: "lost_race" };
   await createEventRow(db, eventRowFrom(source, eventID, ownerID));
@@ -225,10 +269,33 @@ async function noticeDraftMade(
   }
 }
 
+/** Tell a CCA's heads the draft was not made and what to do. Best effort. */
+async function noticeDraftNotMade(db: LinkDb, source: Source): Promise<void> {
+  try {
+    const heads = await db.ccaHead.findMany({
+      where: { ccaID: source.ccaID },
+      select: { userID: true },
+    });
+    await notify(db, {
+      recipients: heads.map((h) => h.userID),
+      kind: "proposal.event_draft_failed",
+      title:
+        "The event draft was not made. Press Create event on the proposal.",
+      body: source.title,
+      href: headProposalHref(source.ccaID, source.id),
+    });
+  } catch (err) {
+    logName("proposal_event_notice_failed", err);
+  }
+}
+
 /**
  * Run right after an approval commits. Makes the draft when the head asked for
  * one and `events.enabled` is on. NEVER throws: whatever goes wrong is logged
  * by error name and the approval stands; the Create event button recovers.
+ * It reports what happened, so the director's page can say when no draft was
+ * made. Only a `cleared` proposal is drafted here; the button also accepts one
+ * that has since finished.
  *
  * The draft's owner is the proposal's creator. If their id was cleared by
  * account deletion (B16) no draft is made here, since the director who
@@ -238,31 +305,47 @@ async function noticeDraftMade(
 export async function draftEventAfterApproval(
   db: LinkDb,
   proposalID: string,
-): Promise<void> {
+): Promise<EventDraftOutcome> {
+  let source: Source | null = null;
   try {
-    const source = await loadSource(db, proposalID);
-    if (!source || source.status !== "cleared") return;
-    if (source.willBeEvent !== true) return;
-    if (!(await areEventsEnabled(db))) return;
+    source = await loadSource(db, proposalID);
+    if (!source) return "skipped";
+    if (source.status !== "cleared") {
+      console.error(
+        JSON.stringify({ evt: "proposal_event_draft_skipped", proposalID }),
+      );
+      return "skipped";
+    }
+    if (source.willBeEvent !== true) return "not_requested";
+    if (!(await areEventsEnabled(db))) return "events_off";
     if (source.createdBy === null) {
       console.error(JSON.stringify({ evt: "proposal_event_no_owner" }));
-      return;
+      await noticeDraftNotMade(db, source);
+      return "no_owner";
     }
-    const result = await linkAndCreate(db, source, source.createdBy);
+    const result = await linkAndCreate(db, source, source.createdBy, [
+      "cleared",
+    ]);
     if (result.outcome === "created") {
       await noticeDraftMade(db, source, result.eventID);
+      return "created";
     }
+    return result.outcome === "in_progress" ? "in_progress" : "already_linked";
   } catch (err) {
     logName("proposal_event_draft_failed", err);
+    if (source) await noticeDraftNotMade(db, source);
+    return "failed";
   }
 }
 
 /**
  * The Create event button. A head of the proposal's CCA, by the strict guard,
- * with both flags on (a failed flag read is off). A director who is not also a
- * head cannot press it: the draft belongs to the CCA's heads, who alone can
- * open and publish it. Safe to press again, or at the same moment as the
- * automatic step: only one compare-and-set wins.
+ * with both flags on (a failed flag read is off), on an approved proposal
+ * (cleared, or finished since: A34). A director who is not also a head cannot
+ * press it: the draft belongs to the CCA's heads, who alone can open and
+ * publish it. Safe to press again, or at the same moment as the automatic
+ * step: only one compare-and-set wins. While another create is still running
+ * (a fresh claim) it writes nothing and says so.
  */
 export async function createEventFromProposal(
   db: LinkDb,
@@ -276,13 +359,21 @@ export async function createEventFromProposal(
   }
   await assertCcaHead(db, userID, source.ccaID, { hideExistence: true });
   await assertWithinLimit("createEvent", userID);
-  if (source.status !== "cleared") {
+  if (!BUTTON_STATUSES.includes(source.status)) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: EVENT_NOT_APPROVED,
     });
   }
-  const result = await linkAndCreate(db, source, source.createdBy ?? userID);
+  const result = await linkAndCreate(
+    db,
+    source,
+    source.createdBy ?? userID,
+    BUTTON_STATUSES,
+  );
+  if (result.outcome === "in_progress") {
+    throw new TRPCError({ code: "CONFLICT", message: EVENT_BEING_MADE });
+  }
   if (result.outcome === "lost_race") {
     const now = await loadSource(db, id);
     return { created: false, eventID: now?.eventID ?? null };

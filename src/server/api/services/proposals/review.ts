@@ -10,7 +10,7 @@ import {
   readSelfApproved,
 } from "./access";
 import { PROPOSAL_NOT_FOUND } from "./drafts";
-import { draftEventAfterApproval } from "./eventLink";
+import { draftEventAfterApproval, type EventDraftOutcome } from "./eventLink";
 import { assertWithinLimit } from "./limits";
 import {
   PROPOSAL_CONFLICT,
@@ -50,6 +50,8 @@ export type ReviewResult = {
   id: string;
   version: number;
   status: "cleared" | "needs_action" | "finished";
+  /** Approve only: what the automatic Event draft did. */
+  eventDraft?: EventDraftOutcome;
 };
 
 type Extras = {
@@ -194,8 +196,8 @@ export async function approveProposal(
   const result = await reviewMove(db, userID, "approve", input, {
     note: input.note ?? null,
   });
-  await draftEventAfterApproval(db, result.id);
-  return result;
+  const eventDraft = await draftEventAfterApproval(db, result.id);
+  return { ...result, eventDraft };
 }
 
 export function returnProposal(

@@ -183,6 +183,8 @@ export function describeProposalError(message: string | undefined): {
         return "This proposal can no longer be edited.";
       case "EVENTS_DISABLED":
         return "Events are not switched on, so an event draft cannot be made.";
+      case "EVENT_BEING_MADE":
+        return "The event draft is still being made. Try again shortly.";
       case "PROPOSAL_NOT_APPROVED":
         return "An event draft can be made once the proposal is approved.";
       case "END_NOT_AFTER_START":

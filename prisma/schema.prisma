@@ -1668,6 +1668,10 @@ model Proposal {
   /// point at an Event that `deleteDraft` removed. Written explicitly as null
   /// on create; a row with no key is handled the same as a stored null.
   eventID      Int?
+  /// When `eventID` was claimed, written in the same compare-and-set. A linked
+  /// id with no Event is "being made" for 2 minutes after this, then recoverable
+  /// (eventLink.ts). A row with no key counts as old.
+  eventClaimedAt DateTime?
   submittedAt  DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt

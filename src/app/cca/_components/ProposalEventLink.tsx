@@ -16,6 +16,7 @@ type LinkProposal = Pick<
   | "viewer"
   | "event"
   | "eventMissing"
+  | "eventBeingMade"
   | "eventsEnabled"
   | "canCreateEvent"
 >;
@@ -44,7 +45,13 @@ export default function ProposalEventLink({
   });
 
   const { event } = proposal;
-  if (!event && !proposal.eventMissing && proposal.status !== "cleared") {
+  if (
+    !event &&
+    !proposal.eventMissing &&
+    !proposal.eventBeingMade &&
+    proposal.status !== "cleared" &&
+    proposal.status !== "finished"
+  ) {
     return null;
   }
 
@@ -76,10 +83,15 @@ export default function ProposalEventLink({
       )}
       {!event && proposal.eventMissing && (
         <p role="status" className="text-sm text-amber-800">
-          The event draft for this proposal has been deleted.
+          The event draft is missing. It was deleted or could not be made.
         </p>
       )}
-      {!event && !proposal.eventMissing && (
+      {!event && proposal.eventBeingMade && (
+        <p role="status" className="text-sm text-gray-600">
+          The event draft is still being made. Check again shortly.
+        </p>
+      )}
+      {!event && !proposal.eventMissing && !proposal.eventBeingMade && (
         <p className="text-sm text-gray-600">
           No event has been made from this proposal.
         </p>

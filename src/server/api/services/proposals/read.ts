@@ -114,6 +114,7 @@ export async function getProposal(
         willBeEvent: row.willBeEvent ?? null,
         status: row.status,
         eventID: row.eventID ?? null,
+        eventClaimedAt: row.eventClaimedAt ?? null,
       },
       viewer === "head",
     ),
