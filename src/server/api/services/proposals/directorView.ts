@@ -6,6 +6,7 @@ import { NOT_DIRECTOR } from "~/server/api/services/directorGuard";
 import { directedCcasOrRefuse } from "./access";
 import { isProposalsEnabled } from "./flag";
 import { displayNames } from "./names";
+import { unreadCounts } from "./unread";
 
 /**
  * The director's home (F29): counts by status and a review queue, for the CCAs
@@ -45,6 +46,8 @@ export type QueueItem = {
   category: string;
   title: string;
   submittedAt: Date | null;
+  /** This director's own unread comments on it (F11). */
+  unread: number;
 };
 
 export type DirectorQueue = {
@@ -138,10 +141,16 @@ export async function getDirectorQueue(
     }),
   ]);
   const page = rows.slice(0, QUEUE_PAGE);
+  const unread = await unreadCounts(
+    db,
+    userID,
+    page.map((r) => r.id),
+  );
   return {
     items: page.map((r) => ({
       ...r,
       ccaName: ccaRows.find((c) => c.ccaID === r.ccaID)?.ccaName ?? null,
+      unread: unread.get(r.id) ?? 0,
     })),
     nextCursor:
       rows.length > QUEUE_PAGE ? (rows[QUEUE_PAGE]?.id ?? null) : null,

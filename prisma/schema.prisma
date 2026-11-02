@@ -1586,6 +1586,11 @@ model Notification {
   readAt    DateTime?
   /// When the TTL index removes the row (about 180 days after creation).
   expiresAt DateTime
+  /// Optional. At most one row may carry a given key (a partial unique index
+  /// from create-proposal-indexes.mjs, deliberately not declared here: Prisma
+  /// would make it a plain unique index). A nudge uses it to be sent once per
+  /// proposal, per person and per Singapore day.
+  noticeKey String?
 
   @@index([userID, createdAt], map: "notification_user_created")
   @@index([userID, readAt], map: "notification_user_read")
