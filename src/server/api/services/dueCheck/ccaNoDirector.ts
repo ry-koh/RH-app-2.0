@@ -1,6 +1,9 @@
 import { ADMIN_ROLE, HALL_OFFICE_ROLE, SCRC_ROLE } from "~/lib/roleNames";
-import { currentDirectorIDs } from "~/server/api/services/directorGuard";
-import { isProposalsEnabled } from "~/server/api/services/proposals/flag";
+import {
+  currentDirectorIDsByCca,
+  isDirectorsEnabledStrict,
+} from "~/server/api/services/directorGuard";
+import { PROPOSALS_FLAG_KEY } from "~/server/api/services/proposals/flag";
 import { normalizeStoredRoles } from "~/server/api/services/roles";
 import type { DueKind } from "./types";
 
@@ -9,36 +12,41 @@ const STAFF_ROLES: readonly string[] = [
   SCRC_ROLE,
   HALL_OFFICE_ROLE,
 ];
-const NAME_MAX = 100;
 
 /** Where staff fix it: the director positions panel on /scrc. */
 export const NO_DIRECTOR_HREF = "/scrc";
 
 /**
- * A CCA with no director who can act (4.2, A49), told to admins, RFs and Hall
- * Office once per CCA, person and Singapore day.
+ * CCAs with no director who can act (4.2, A49), told to admins, RFs and Hall
+ * Office as ONE notice per person per Singapore day that says how many CCAs
+ * have none (no names, so sixty vacancies are one row, not sixty). Key
+ * `due.cca_no_director:<Singapore day>`; the person is appended.
  *
- * Only while `proposals.enabled` is on (a failed read counts as off): without
- * proposals nobody needs a director. Whether the person is staff is read from
- * their stored roles, and each CCA's directors come from the strict guard's
- * `currentDirectorIDs`; none of these reads has a catch, so if one fails the
- * runner logs it and this kind writes nothing. `currentDirectorIDs` answers
- * [] while `directors.enabled` is off, which is the same "nobody can act"
- * that the notice at submit (B21) uses.
+ * Runs only while `proposals.enabled` AND `directors.enabled` are on. Both are
+ * read strictly (`isProposalsEnabled` swallows a failed read, and a database
+ * fault must not look like "nothing is due"), so a failed read reaches the
+ * runner, which logs it and writes nothing. With directors off every CCA would
+ * count as vacant, which says nothing useful; the doctor already goes red for
+ * proposals on with directors off (B85).
  *
- * It does not replace that notice. The one at submit is about a specific
- * proposal waiting now; this one is about the CCA, daily, until a director is
- * set. A person can get both for a CCA on the day a proposal is submitted.
+ * Staff status comes from the person's stored roles, the directors from the
+ * strict guard in one batch (`currentDirectorIDsByCca`); none of these reads
+ * has a catch. It does not replace the notice at submit (B21), which names a
+ * specific proposal waiting now.
  *
- * Catch-up: it computes only today's state under today's key, so nothing from
- * missed days exists to pile up, and each CCA is a separate fact. Hence "all".
+ * Catch-up: only today's state under today's key is computed, so no missed
+ * days exist to collapse. Hence "all" (there is one notice).
  */
 export const ccaNoDirectorKind: DueKind = {
   name: "cca_no_director",
   noticeKind: "cca.no_director",
   catchUp: "all",
   async due({ db, userID, now, dayKey }) {
-    if (!(await isProposalsEnabled(db))) return [];
+    const flag = await db.systemFlag.findUnique({
+      where: { key: PROPOSALS_FLAG_KEY },
+    });
+    if (flag?.value !== "on") return [];
+    if (!(await isDirectorsEnabledStrict(db))) return [];
 
     const row = await db.userRole.findUnique({
       where: { userID },
@@ -49,20 +57,24 @@ export const ccaNoDirectorKind: DueKind = {
       return [];
     }
 
-    const ccas = await db.cCA.findMany({
-      select: { ccaID: true, ccaName: true },
-      orderBy: { ccaID: "asc" },
-    });
-    const due = [];
-    for (const cca of ccas) {
-      if ((await currentDirectorIDs(db, cca.ccaID, now)).length > 0) continue;
-      due.push({
-        key: `due.cca_no_director:${cca.ccaID}:${dayKey}`,
-        title: `${cca.ccaName.slice(0, NAME_MAX)} has no director to review its proposals`,
-        body: "No one with a current JCRC role holds a director position for this CCA. Its proposals wait in review.",
+    const ccas = await db.cCA.findMany({ select: { ccaID: true } });
+    const directors = await currentDirectorIDsByCca(
+      db,
+      ccas.map((c) => c.ccaID),
+      now,
+    );
+    const vacant = [...directors.values()].filter((d) => d.length === 0).length;
+    if (vacant === 0) return [];
+    return [
+      {
+        key: `due.cca_no_director:${dayKey}`,
+        title:
+          vacant === 1
+            ? "1 CCA has no director to review its proposals"
+            : `${vacant} CCAs have no director to review their proposals`,
+        body: "No one with a current JCRC role holds a director position for them, so their proposals wait in review. Set directors on the director positions panel.",
         href: NO_DIRECTOR_HREF,
-      });
-    }
-    return due;
+      },
+    ];
   },
 };

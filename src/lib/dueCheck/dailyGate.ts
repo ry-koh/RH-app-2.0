@@ -67,3 +67,31 @@ export function claimDueCheck(
   memory.day = day;
   return true;
 }
+
+/** The part of `document` the watcher needs, so a test can hand in a fake. */
+export type VisibilityDoc = {
+  visibilityState: string;
+  addEventListener: (type: "visibilitychange", fn: () => void) => void;
+  removeEventListener: (type: "visibilitychange", fn: () => void) => void;
+};
+
+/**
+ * Fire now if the page is visible, and again each time it becomes visible,
+ * through `claimDueCheck`, so a tab or app left open across Singapore midnight
+ * fires once on the new day and never more than once per session and day. When
+ * storage is unavailable `claimDueCheck` allows one fire per page load, so
+ * returning to the tab does not refire. Returns the cleanup.
+ */
+export function watchDueCheck(
+  doc: VisibilityDoc,
+  fire: () => void,
+  now: () => Date = () => new Date(),
+  claim: (at: Date) => boolean = claimDueCheck,
+): () => void {
+  const check = () => {
+    if (doc.visibilityState === "visible" && claim(now())) fire();
+  };
+  check();
+  doc.addEventListener("visibilitychange", check);
+  return () => doc.removeEventListener("visibilitychange", check);
+}
