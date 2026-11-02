@@ -40,7 +40,7 @@ describe("the due check's scope", () => {
 
   it("is reached from the bell through the daily gate, and refreshes the unread count", () => {
     const bell = read("src/app/_components/NotificationBell.tsx");
-    expect(bell).toContain("claimDueCheck");
+    expect(bell).toContain("watchDueCheck");
     expect(bell).toContain("runDueCheck");
     expect(bell).toContain("unreadCount.invalidate");
   });

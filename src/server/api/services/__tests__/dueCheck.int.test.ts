@@ -153,7 +153,7 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
       });
     };
 
-    /** This person's no-director notice keys for this file's CCAs. */
+    /** This person's no-director notice keys: one per Singapore day. */
     const keysOf = async (userID: string) =>
       (
         await db.notification.findMany({
@@ -162,11 +162,19 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         })
       )
         .map((n) => n.noticeKey!)
-        .filter((k) => CCAS.some((c) => k.startsWith(`${KEY_PREFIX}${c}:`)))
         .sort();
 
-    const keyFor = (ccaID: number, userID: string, day = "2026-11-02") =>
-      `${KEY_PREFIX}${ccaID}:${day}|${userID}`;
+    const keyFor = (userID: string, day = "2026-11-02") =>
+      `${KEY_PREFIX}${day}|${userID}`;
+
+    /** The number of CCAs the person's latest notice says have no director. */
+    const vacantCount = async (userID: string) => {
+      const row = await db.notification.findFirst({
+        where: { userID, kind: "cca.no_director" },
+        orderBy: { createdAt: "desc" },
+      });
+      return row ? Number(/^([0-9]+) CCA/.exec(row.title)![1]) : 0;
+    };
 
     const countOf = (userID: string, kind?: string) =>
       db.notification.count({ where: { userID, ...(kind && { kind }) } });
@@ -246,17 +254,16 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         }
 
         for (const id of [U.admin, U.scrc, U.hall]) {
-          // Only the CCA without a director: 9032 has one.
-          expect(await keysOf(id)).toEqual([keyFor(CCA_VACANT, id)]);
+          expect(await keysOf(id)).toEqual([keyFor(id)]);
+          // 9031 has no director, so the count is at least 1.
+          expect(await vacantCount(id)).toBeGreaterThanOrEqual(1);
         }
         const row = await db.notification.findFirstOrThrow({
-          where: {
-            userID: U.admin,
-            noticeKey: { startsWith: `${KEY_PREFIX}${CCA_VACANT}:` },
-          },
+          where: { userID: U.admin, kind: "cca.no_director" },
         });
-        expect(row.kind).toBe("cca.no_director");
-        expect(row.title).toContain(`Test CCA ${CCA_VACANT}`);
+        expect(row.title).toMatch(/^[0-9]+ CCAs? ha(s|ve) no director/);
+        expect(row.title).not.toContain("Test CCA");
+        expect(row.body ?? "").not.toContain(U.dir);
         expect(row.href).toBe("/scrc");
         expect(row.readAt).toBeNull();
       });
@@ -288,12 +295,16 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
           now: new Date("2026-11-02T16:00:00Z"),
         });
         expect(await keysOf(U.admin)).toEqual([
-          keyFor(CCA_VACANT, U.admin),
-          keyFor(CCA_VACANT, U.admin, "2026-11-03"),
+          keyFor(U.admin),
+          keyFor(U.admin, "2026-11-03"),
         ]);
       });
 
-      it("stops telling once a director is set", async () => {
+      it("counts one fewer once a director is set", async () => {
+        await runDueCheck(db, U.admin, { now: NOW });
+        const before = await vacantCount(U.admin);
+        expect(before).toBeGreaterThanOrEqual(1);
+
         const p = await db.jcrcPosition.create({
           data: { name: "TEST new", createdBy: "test", vetsProposals: true },
         });
@@ -308,17 +319,22 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
             endsAt: null,
           },
         });
+        await db.notification.deleteMany({ where: { userID: U.admin } });
         await runDueCheck(db, U.admin, { now: NOW });
-        expect(await keysOf(U.admin)).toEqual([]);
+        expect(await vacantCount(U.admin)).toBe(before - 1);
       });
 
       it("treats an ended holder, or one who lost jcrc, as no director", async () => {
+        await runDueCheck(db, U.admin, { now: NOW });
+        const before = await vacantCount(U.admin);
+
         await db.jcrcPositionHolder.updateMany({
           where: { userID: U.dir },
           data: { endsAt: new Date(NOW.getTime() - DAY_MS) },
         });
+        await db.notification.deleteMany({ where: { userID: U.admin } });
         await runDueCheck(db, U.admin, { now: NOW });
-        expect(await keysOf(U.admin)).toHaveLength(2);
+        expect(await vacantCount(U.admin)).toBe(before + 1);
 
         await db.notification.deleteMany({ where: { userID: U.admin } });
         await db.jcrcPositionHolder.updateMany({
@@ -327,16 +343,63 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         });
         await setRoles(U.dir, ["resident"]);
         await runDueCheck(db, U.admin, { now: NOW });
-        expect(await keysOf(U.admin)).toHaveLength(2);
+        expect(await vacantCount(U.admin)).toBe(before + 1);
       });
 
-      it("counts every CCA as having no director while directors.enabled is off", async () => {
-        await setFlag("directors.enabled", "off");
-        await runDueCheck(db, U.admin, { now: NOW });
-        expect(await keysOf(U.admin)).toEqual(
-          [keyFor(CCA_VACANT, U.admin), keyFor(CCA_COVERED, U.admin)].sort(),
-        );
+      it("is one notice however many CCAs have no director", async () => {
+        const extra = Array.from({ length: 5 }, (_, i) => 9040 + i);
+        await db.cCA.createMany({
+          data: extra.map((ccaID) => ({
+            ccaID,
+            ccaName: `Test CCA ${ccaID}`,
+            category: "Test",
+          })),
+        });
+        try {
+          await runDueCheck(db, U.admin, { now: NOW });
+          expect(await keysOf(U.admin)).toEqual([keyFor(U.admin)]);
+          expect(await countOf(U.admin)).toBe(1);
+          expect(await vacantCount(U.admin)).toBeGreaterThanOrEqual(6);
+        } finally {
+          await db.cCA.deleteMany({ where: { ccaID: { in: extra } } });
+        }
       });
+
+      it("says nothing while directors.enabled is off, absent or odd", async () => {
+        for (const value of ["off", null, "yes"]) {
+          await setFlag("directors.enabled", value);
+          await runDueCheck(db, U.admin, { now: NOW });
+          expect(await keysOf(U.admin)).toEqual([]);
+        }
+      });
+
+      it.each(["proposals.enabled", "directors.enabled"])(
+        "writes nothing and logs when the %s read fails",
+        async (key) => {
+          const log = vi
+            .spyOn(console, "error")
+            .mockImplementation(() => undefined);
+          const real = db.systemFlag.findUnique.bind(db.systemFlag);
+          const flaky = proxied(db, (prop) =>
+            prop === "systemFlag"
+              ? {
+                  findUnique: (args: { where: { key: string } }) =>
+                    args.where.key === key
+                      ? Promise.reject(new Error("db down"))
+                      : real(args as never),
+                }
+              : undefined,
+          );
+
+          const res = await runDueCheck(flaky, U.admin, { now: NOW });
+
+          expect(res).toEqual({ written: 0, failedKinds: ["cca_no_director"] });
+          expect(await keysOf(U.admin)).toEqual([]);
+          const logged = log.mock.calls.map((c) => String(c[0])).join(" ");
+          expect(logged).toContain("due_check_kind_failed");
+          expect(logged).not.toContain("db down");
+        },
+      );
 
       it.each([
         ["off", "off"],
@@ -395,7 +458,7 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
             runDueCheck(db, U.admin, { now: NOW }),
           ),
         );
-        expect(await keysOf(U.admin)).toEqual([keyFor(CCA_VACANT, U.admin)]);
+        expect(await keysOf(U.admin)).toEqual([keyFor(U.admin)]);
       });
 
       it("writes once through the mutation from three tabs at once, then a fourth call", async () => {
@@ -527,6 +590,40 @@ describe.skipIf(!isLocalDevDatabase(process.env.DATABASE_URL))(
         );
         // Another person has their own budget.
         expect(await errorOf(as(U.jcrc).runDueCheck())).toBe("ok");
+      });
+    });
+
+    describe("the guard's batch form", () => {
+      it("answers the same as the single form, for many CCAs in one go", async () => {
+        const { currentDirectorIDs, currentDirectorIDsByCca } = await import(
+          "~/server/api/services/directorGuard"
+        );
+        const ids = [CCA_VACANT, CCA_COVERED, 9_999_999];
+        const batch = await currentDirectorIDsByCca(db, ids, NOW);
+        expect(batch.get(CCA_VACANT)).toEqual([]);
+        expect(batch.get(CCA_COVERED)).toEqual([U.dir]);
+        expect(batch.get(9_999_999)).toEqual([]);
+        for (const id of ids) {
+          expect(await currentDirectorIDs(db, id, NOW)).toEqual(batch.get(id));
+        }
+      });
+
+      it("is empty while directors.enabled is off, and rejects when a read fails", async () => {
+        const { currentDirectorIDsByCca } = await import(
+          "~/server/api/services/directorGuard"
+        );
+        await setFlag("directors.enabled", "off");
+        expect(
+          (await currentDirectorIDsByCca(db, [CCA_COVERED], NOW)).get(
+            CCA_COVERED,
+          ),
+        ).toEqual([]);
+        await setFlag("directors.enabled", "on");
+        await expect(
+          currentDirectorIDsByCca(withFailingReads("jcrcPositionHolder"), [
+            CCA_COVERED,
+          ]),
+        ).rejects.toThrow("db down");
       });
     });
 

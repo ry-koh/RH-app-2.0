@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   claimDueCheck,
   DUE_CHECK_STORAGE_KEY,
   newDueCheckMemory,
+  watchDueCheck,
   type DayStorage,
+  type VisibilityDoc,
 } from "~/lib/dueCheck/dailyGate";
 
 const fakeStorage = (): DayStorage & { map: Map<string, string> } => {
@@ -112,5 +114,88 @@ describe("claimDueCheck", () => {
     };
     expect(claimDueCheck(BEFORE_MIDNIGHT, readOnly, memory)).toBe(true);
     expect(claimDueCheck(BEFORE_MIDNIGHT, readOnly, memory)).toBe(false);
+  });
+});
+
+const fakeDoc = () => {
+  const listeners = new Set<() => void>();
+  const doc: VisibilityDoc & { show: (v: string) => void } = {
+    visibilityState: "visible",
+    addEventListener: (_t, fn) => void listeners.add(fn),
+    removeEventListener: (_t, fn) => void listeners.delete(fn),
+    show(v) {
+      doc.visibilityState = v;
+      for (const fn of [...listeners]) fn();
+    },
+  };
+  return { doc, listeners };
+};
+
+describe("watchDueCheck", () => {
+  it("fires on load, then again only when a tab returns on a new Singapore day", () => {
+    const storage = fakeStorage();
+    const memory = newDueCheckMemory();
+    const { doc } = fakeDoc();
+    let at = BEFORE_MIDNIGHT;
+    const fire = vi.fn();
+    watchDueCheck(
+      doc,
+      fire,
+      () => at,
+      (d) => claimDueCheck(d, storage, memory),
+    );
+    expect(fire).toHaveBeenCalledTimes(1);
+
+    // Back to the tab on the same day: nothing.
+    doc.show("hidden");
+    doc.show("visible");
+    expect(fire).toHaveBeenCalledTimes(1);
+
+    // Left open across Singapore midnight (16:00 UTC), then shown again.
+    at = AFTER_MIDNIGHT;
+    doc.show("hidden");
+    expect(fire).toHaveBeenCalledTimes(1);
+    doc.show("visible");
+    expect(fire).toHaveBeenCalledTimes(2);
+    doc.show("visible");
+    expect(fire).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not refire on each focus when storage throws", () => {
+    const memory = newDueCheckMemory();
+    const { doc } = fakeDoc();
+    let at = BEFORE_MIDNIGHT;
+    const fire = vi.fn();
+    watchDueCheck(
+      doc,
+      fire,
+      () => at,
+      (d) => claimDueCheck(d, throwing(), memory),
+    );
+    expect(fire).toHaveBeenCalledTimes(1);
+    doc.show("visible");
+    at = AFTER_MIDNIGHT;
+    doc.show("visible");
+    doc.show("visible");
+    expect(fire).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fire while the page is hidden, and stops after cleanup", () => {
+    const { doc, listeners } = fakeDoc();
+    doc.visibilityState = "hidden";
+    const fire = vi.fn();
+    const stop = watchDueCheck(
+      doc,
+      fire,
+      () => AFTER_MIDNIGHT,
+      () => true,
+    );
+    expect(fire).not.toHaveBeenCalled();
+    doc.show("visible");
+    expect(fire).toHaveBeenCalledTimes(1);
+    stop();
+    expect(listeners.size).toBe(0);
+    doc.show("visible");
+    expect(fire).toHaveBeenCalledTimes(1);
   });
 });
