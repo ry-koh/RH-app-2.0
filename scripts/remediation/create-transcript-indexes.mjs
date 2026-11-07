@@ -203,14 +203,38 @@ export const TARGETS = {
   ],
 };
 
-/** The createIndexes spec for one entry. */
-const specOf = (ix) =>
-  ix.unique
-    ? { key: ix.key, name: ix.name, unique: true }
-    : { key: ix.key, name: ix.name };
+/**
+ * The createIndexes spec for one entry. `expireAfterSeconds` (optional, a TTL
+ * index) is passed through when an entry sets it, including 0.
+ */
+const specOf = (ix) => ({
+  key: ix.key,
+  name: ix.name,
+  ...(ix.unique && { unique: true }),
+  ...(ix.expireAfterSeconds !== undefined && {
+    expireAfterSeconds: ix.expireAfterSeconds,
+  }),
+});
 
-/** Server fields on a listed index that say nothing about its shape. */
-const NEUTRAL = new Set(["v", "key", "name", "ns", "unique", "background"]);
+/**
+ * Server fields on a listed index that say nothing about its shape.
+ * `expireAfterSeconds` is compared on its own by `classify`, not ignored.
+ */
+const NEUTRAL = new Set([
+  "v",
+  "key",
+  "name",
+  "ns",
+  "unique",
+  "background",
+  "expireAfterSeconds",
+]);
+
+/** The TTL of a listed index or a wanted entry; undefined when there is none. */
+const ttlOf = (i) =>
+  i?.expireAfterSeconds === undefined
+    ? undefined
+    : numify(i.expireAfterSeconds);
 
 export const sameKey = (a, b) => {
   const ak = Object.entries(a ?? {});
@@ -245,6 +269,12 @@ export function classify(want, existing) {
         note: `name "${want.name}" exists with unique=${byName.unique === true}, wanted ${want.unique}`,
       };
     }
+    if (ttlOf(byName) !== ttlOf(want)) {
+      return {
+        status: "conflict",
+        note: `name "${want.name}" exists with expireAfterSeconds=${ttlOf(byName)}, wanted ${ttlOf(want)}`,
+      };
+    }
     const extra = extraOptions(byName);
     if (extra.length) {
       return {
@@ -256,7 +286,11 @@ export function classify(want, existing) {
   }
   const byKey = existing.find((i) => sameKey(i?.key, want.key));
   if (byKey) {
-    if ((byKey.unique === true) !== want.unique || extraOptions(byKey).length) {
+    if (
+      (byKey.unique === true) !== want.unique ||
+      ttlOf(byKey) !== ttlOf(want) ||
+      extraOptions(byKey).length
+    ) {
       return {
         status: "conflict",
         note: `key ${JSON.stringify(want.key)} exists as "${byKey.name}" with different uniqueness/options`,
